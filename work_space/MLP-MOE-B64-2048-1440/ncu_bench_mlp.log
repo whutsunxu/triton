@@ -1,0 +1,37 @@
+==PROF== Connected to process 26658 (/usr/bin/python3.12)
+==PROF== Connected to process 26692 (/usr/bin/python3.12)
+=========================================
+logs/gpt-oss-x2/fp8x-fp8w-EP1.csv...
+=========================================
+==ERROR== ERR_NVGPUCTRPERM - The user does not have permission to access NVIDIA GPU Performance Counters on the target device 0. For instructions on enabling permissions and to get more information see https://developer.nvidia.com/ERR_NVGPUCTRPERM
+
+ gate matrix: activation=(torch.Size([2048, 1440]), torch.bfloat16), wg_global=(torch.Size([1440, 128]), torch.bfloat16), bg_global=(torch.Size([128]), torch.float32)
+
+ precision config: PrecisionConfig(max_num_imprecise_acc=None, allow_tf32=True, flex_ctx=FlexCtx(lhs_data=InFlexData(dtype=None, scale=None), rhs_data=InFlexData(dtype=None, scale=None), out_data=OutFlexData(dtype=None, expected_scale=None, actual_scale=None, checksum_scale=None), acc_data=InFlexData(dtype=None, scale=None)), acc_scale=1.0, flexpoint_saturate_inf=False, report_quantization_err_fn=None, a_mx_scale=None, a_microblock_size=None, b_mx_scale=None, b_microblock_size=32, c_mx_scale=None, c_microblock_size=None, c_value_pack_factor=1, out_dtype=None, enforce_bitwise_invariance=False)
+
+ topk: l_dp_local=(torch.Size([2048, 128]), torch.bfloat16), n_expts_act=4
+
+ convert_dp_to_ep: x_dp_local_fp8=(torch.Size([2048, 1440]), torch.float8_e4m3fn), expt_assignment.expt_boolmask=torch.Size([1, 128]), expt_assignment.expt_map=torch.Size([1, 128]), active_indx=(torch.Size([2048, 4]), torch.int16), dispatch_indx=(torch.Size([8192]), torch.int32), combine_indx=(torch.Size([8192]), torch.int32)
+
+ first matmul: y_ep_local=(torch.Size([8192, 1440]), torch.float8_e4m3fn), w1_ep_local=(torch.Size([128, 1440, 2880]), torch.float8_e4m3fn), b1_ep_local=(torch.Size([128, 2880]), torch.float32)
+
+ second matmul: y_ep_local=(torch.Size([8192, 1440]), torch.float8_e4m3fn), w2_ep_local=(torch.Size([128, 1440, 1440]), torch.float8_e4m3fn), b2_ep_local=(torch.Size([128, 1440]), torch.float32)
+
+ convert_ep_to_dp: y_ep_local=(torch.Size([8192, 1440]), torch.float8_e4m3fn), expt_assignment.expt_boolmask=torch.Size([1, 128]), expt_assignment.expt_map=torch.Size([1, 128]), active_indx=(torch.Size([2048, 4]), torch.int16), combine_indx=(torch.Size([8192]), torch.int32)
+
+ gate matrix: activation=(torch.Size([2048, 1440]), torch.bfloat16), wg_global=(torch.Size([1440, 128]), torch.bfloat16), bg_global=(torch.Size([128]), torch.float32)
+
+ precision config: PrecisionConfig(max_num_imprecise_acc=None, allow_tf32=True, flex_ctx=FlexCtx(lhs_data=InFlexData(dtype=None, scale=None), rhs_data=InFlexData(dtype=None, scale=None), out_data=OutFlexData(dtype=None, expected_scale=None, actual_scale=None, checksum_scale=None), acc_data=InFlexData(dtype=None, scale=None)), acc_scale=1.0, flexpoint_saturate_inf=False, report_quantization_err_fn=None, a_mx_scale=None, a_microblock_size=None, b_mx_scale=None, b_microblock_size=32, c_mx_scale=None, c_microblock_size=None, c_value_pack_factor=1, out_dtype=None, enforce_bitwise_invariance=False)
+
+ topk: l_dp_local=(torch.Size([2048, 128]), torch.bfloat16), n_expts_act=4
+
+ convert_dp_to_ep: x_dp_local_fp8=(torch.Size([2048, 1440]), torch.float8_e4m3fn), expt_assignment.expt_boolmask=torch.Size([1, 128]), expt_assignment.expt_map=torch.Size([1, 128]), active_indx=(torch.Size([2048, 4]), torch.int16), dispatch_indx=(torch.Size([8192]), torch.int32), combine_indx=(torch.Size([8192]), torch.int32)
+
+ first matmul: y_ep_local=(torch.Size([8192, 1440]), torch.float8_e4m3fn), w1_ep_local=(torch.Size([128, 1440, 2880]), torch.float8_e4m3fn), b1_ep_local=(torch.Size([128, 2880]), torch.float32)
+
+ second matmul: y_ep_local=(torch.Size([8192, 1440]), torch.float8_e4m3fn), w2_ep_local=(torch.Size([128, 1440, 1440]), torch.float8_e4m3fn), b2_ep_local=(torch.Size([128, 1440]), torch.float32)
+
+ convert_ep_to_dp: y_ep_local=(torch.Size([8192, 1440]), torch.float8_e4m3fn), expt_assignment.expt_boolmask=torch.Size([1, 128]), expt_assignment.expt_map=torch.Size([1, 128]), active_indx=(torch.Size([2048, 4]), torch.int16), combine_indx=(torch.Size([8192]), torch.int32)
+batch_per_expt:    64 | MS: 3.06 | TFLOPS: 33.55 | TBPS: 0.28
+==PROF== Disconnected from process 26692
+==PROF== Disconnected from process 26658
