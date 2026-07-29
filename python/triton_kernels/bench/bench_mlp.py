@@ -96,6 +96,10 @@ def run_mlp(x_dp_local_bf16, x_dp_local_fp8,  # activations
     return z_dp_local
 
 
+# Fixed seed so weights/activations are identical across runs (and across ranks before broadcast).
+BENCH_MLP_SEED = 42
+
+
 def bench_mlp(batch_per_expt, dim1, dim2, n_expts_tot, n_expts_act, x_dtype, w_dtype, EP, shuffle_mx4=False,
               num_stages_fc1=None, num_stages_fc2=None, epilogue_subtile_fc1=None):
     assert n_expts_tot % EP == 0
@@ -106,6 +110,9 @@ def bench_mlp(batch_per_expt, dim1, dim2, n_expts_tot, n_expts_act, x_dtype, w_d
     assert n_expts_tot % EP == 0, f"{n_expts_tot=}, {EP=}, n_expts_tot must be divisible by EP"
     batch = batch_per_expt * n_expts_tot // n_expts_act
     assert EP == n_ranks, f"{EP=}, {n_ranks=}"
+
+    torch.manual_seed(BENCH_MLP_SEED)
+    torch.cuda.manual_seed_all(BENCH_MLP_SEED)
 
     #-- init memory pool --
     symm_mem_pool = SymmetricMemoryPool(Mesh(torch.distributed.group.WORLD))
