@@ -279,7 +279,7 @@ def matmul(a, b, bias,
     if fused_activation is None:
         fused_activation = FusedActivation(FnSpecs.default(), tuple())
     if epilogue is None:
-        epilogue = Epilogue(FnSpecs.default(), tuple(), tuple(), False)
+        epilogue = Epilogue(FnSpecs.default(), tuple(), tuple(), False, float)
     n_slices = max(1, b.shape[0]) if a_ragged_metadata is None else a_ragged_metadata.n_slices
     # unpack b scale
     b_scale = precision_config.b_mx_scale

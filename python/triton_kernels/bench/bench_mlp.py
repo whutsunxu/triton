@@ -195,8 +195,9 @@ def bench_mlp(batch_per_expt, dim1, dim2, n_expts_tot, n_expts_act, x_dtype, w_d
             n_expts_act, expt_assignment, rank, symm_mem_pool, fc1_constraints=fc1_constraints,
             fc2_constraints=fc2_constraints)
     torch.cuda.synchronize()
+    '''
     proton.start(str(fpath), hook="triton")
-    for i in range(100):
+    for i in range(1):
         run_mlp(x_dp_local_bf16, x_dp_local_fp8,  #
                 wg_global, bg_global, pcg,  #
                 w1_ep_local, b1_ep_local, pc1, act1,  #
@@ -206,6 +207,7 @@ def bench_mlp(batch_per_expt, dim1, dim2, n_expts_tot, n_expts_act, x_dtype, w_d
     torch.cuda.synchronize()
     torch.distributed.barrier()
     proton.finalize()
+    '''
     return roofline.parse_profile(fpath.with_suffix(".hatchet"), useful_op_regex=".*matmul.*")
 
 
@@ -230,6 +232,7 @@ def roofline_mlp(batch_sizes, dim1, dim2, n_expts_tot, n_expts_act, x_dtype, w_d
                                          intensity_proxy_values=batch_sizes,  # intensity proxy values to sweep
                                          verbose=verbose,  # options
                                          out_path=out_path.with_suffix(".csv"))  # output path
+    
     png_path = roofline.plot_roofline(series=[csv_path],  # roofline data to plot
                                       flops_dtype=x_dtype,  # dtype to use for FLOPS roof
                                       xlabel="batch_per_expt", title=out_path,  # plot option
@@ -257,7 +260,7 @@ if __name__ == "__main__":
     ep = torch.distributed.get_world_size()
 
     # Common args for all MoE scenarios
-    moe_args = dict(dim1=5760, dim2=5760, n_expts_tot=128, n_expts_act=4, EP=ep, name="gpt-oss-x2")
+    moe_args = dict(dim1=2880, dim2=2880, n_expts_tot=128, n_expts_act=4, EP=ep, name="gpt-oss-x2")
 
     # Run 5 scenarios to isolate 3 optimization categories:
     #   Shuffling: scenario 2 → 3
@@ -266,6 +269,7 @@ if __name__ == "__main__":
 
     # 1. FP8 baseline
     roofline_mlp(batch_sizes, x_dtype=dense_dtypes[0], w_dtype=dense_dtypes[1], **moe_args)
+    '''
     # 2. MX4 baseline
     roofline_mlp(batch_sizes, x_dtype=quantized_dtypes[0], w_dtype=quantized_dtypes[1], **moe_args)
     # 3. MX4 shuffled
@@ -278,5 +282,6 @@ if __name__ == "__main__":
     roofline_mlp(batch_sizes, x_dtype=quantized_dtypes[0], w_dtype=quantized_dtypes[1], shuffle_mx4=True,
                  epilogue_subtile_fc1=2, num_stages_fc1=5, num_stages_fc2=5, **moe_args)
 
+    '''
     torch.distributed.barrier()
     torch.distributed.destroy_process_group()
