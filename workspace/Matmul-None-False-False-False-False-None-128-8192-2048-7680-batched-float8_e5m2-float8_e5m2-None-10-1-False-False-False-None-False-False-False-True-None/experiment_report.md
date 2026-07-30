@@ -199,29 +199,67 @@ Formulas (same as MLP-MoE report):
 
 ### Nsight Compute (worked; privileged container)
 
+`--set basic` only includes LaunchStats / Occupancy / SpeedOfLight / WorkloadDistribution — **no** Warp State Statistics, Scheduler Statistics, or Compute Workload Analysis — so it **cannot** name dominant stalls (`lg_throttle`, `long_scoreboard`, `mio_throttle`, `barrier`, `math_pipe_throttle`, …).
+
+**Fix:** re-profile with stall-capable sections (preferred over bare `basic`):
+
 ```bash
-ncu --force-overwrite --set basic \
+cd /Volumes/case_sensitive_workspace/triton
+export PYTHONPATH=python/triton_kernels
+
+ncu \
+  --force-overwrite \
   --kernel-name _matmul_NNN_fp8e5xfp8e5xfp8e5_128x256x128x1 \
   --launch-count 1 \
-  -o workspace/profile_01/test_matmul_ncu \
-  … pytest …::test_op -q
+  --section LaunchStats \
+  --section Occupancy \
+  --section SpeedOfLight \
+  --section WorkloadDistribution \
+  --section SchedulerStats \
+  --section WarpStateStats \
+  --section ComputeWorkloadAnalysis \
+  -o workspace/.../test_matmul_ncu_stalls \
+  /Volumes/case_sensitive_workspace/venv/bin/python -m pytest \
+    python/triton_kernels/tests/test_matmul.py::test_op -q \
+  > workspace/.../test_matmul_ncu_stalls.log 2>&1
 ```
 
-**Artifacts:** `test_matmul_ncu.ncu-rep`, `test_matmul_ncu.log`, per-run `test_matmul_ncu_run{1,2,3}.*`, `ncu_stability.csv`.
+(Equivalent heavier option: `ncu --set full …`.)
 
-#### Key metrics (`--set basic`, run 3 / canonical)
+**Artifacts:** `test_matmul_ncu_stalls.ncu-rep` / `.log`, `test_matmul_ncu_details.log`, `ncu_stall_breakdown.md` (also synced to `test_matmul_ncu.*`).
+
+#### SOL / occupancy (stall-capable capture)
 
 | Metric | Value |
 | ------ | ----- |
-| Duration (NCU SOL) | **46.91 ms** |
-| Elapsed cycles | 112,685,664 |
-| DRAM Throughput | **6.43%** |
-| Memory Throughput | **37.39%** |
-| Compute (SM) Throughput | **37.39%** |
+| Duration (NCU SOL) | **46.82 ms** |
+| DRAM Throughput | **~6.3%** |
+| Memory / SM Throughput | **~37.4%** |
 | Grid / Block | 5120 / 256 |
-| Theoretical / Achieved occupancy | 16.67% / 16.66% |
+| Theoretical occupancy | **16.7%** (limited by registers + shared memory) |
+| No Eligible (scheduler) | **89.6%** of cycles |
+| Eligible warps / scheduler | **0.16** (of 2.00 active) |
+| Warp cycles per issued inst | **19.28** |
 
-#### NCU stability (3 runs)
+#### Warp stall breakdown (verified present)
+
+From `WarpStateStats` metrics `smsp__average_warps_issue_stalled_*_per_issue_active`:
+
+| Stall reason | Avg warps (per issue-active) | Share of warp latency |
+| ------------ | ---------------------------- | --------------------- |
+| `math_pipe_throttle` | 9.1472 | **47.4%** |
+| `mio_throttle` | 3.8479 | **20.0%** |
+| `wait` | 2.7528 | **14.3%** |
+| `long_scoreboard` | 0.9221 | **4.8%** |
+| `barrier` | 0.5792 | **3.0%** |
+| `not_selected` | 0.5377 | **2.8%** |
+| `short_scoreboard` | 0.4492 | **2.3%** |
+| `lg_throttle` | 0.0227 | **0.1%** |
+| `drain` / `dispatch_stall` / `tex_throttle` | ≈0 | ≈0% |
+
+**Dominant stall:** `math_pipe_throttle` (~47% of issue latency) — execution pipe / oversubscribed math pipeline; Tensor pipe is highest-utilized in Compute Workload Analysis (~31% active cycles). Secondary: `mio_throttle` (~20%), then `wait` (~14%). Memory-side `long_scoreboard` / `lg_throttle` / `barrier` are present but small.
+
+#### Earlier `--set basic` stability (3 runs)
 
 | Run | Duration | DRAM % | SM % |
 | --- | -------- | ------ | ---- |
@@ -229,10 +267,7 @@ ncu --force-overwrite --set basic \
 | 2 | 46.900 ms | 6.42 | 37.39 |
 | 3 | 46.910 ms | 6.43 | 37.39 |
 
-- **CV (duration):** 0.033%; **(max−min)/mean:** 0.064% → stable.
-- NCU duration is **~15% higher** than nsys (46.9 vs 40.8 ms) because `--set basic` **replays** the kernel across metric passes; **use nsys for wall-clock GPU duration**, NCU for counter ratios.
-
----
+- **CV (duration):** 0.033%. NCU duration remains ~15% above nsys due to replay; use nsys for wall-clock GPU time.
 
 ### IR dumps (compiler pass snapshots)
 
@@ -254,5 +289,5 @@ See `irs/MANIFEST.txt`. Env: `TRITON_PERF_IR_DUMP=…/irs TRITON_ALWAYS_COMPILE=
 - **Workload:** batched FP8×FP8 matmul $B{=}10$, $M{=}8192$, $N{=}2048$, $K{=}7680$, tile **128×256×128**, kernel `_matmul_NNN_fp8e5xfp8e5xfp8e5_128x256x128x1`.
 - **nsys:** single-launch GPU time **40.782 ms**; ~**66.7%** of dense **FP8 2D** peak (**63.2 / 94.8 TFLOPS**); op intensity **~2701 ops/B** → **compute-bound** vs FP8 knee **211.6**; effective DRAM BW only **~5%** of 448 GB/s (cache/SMEM reuse).
 - **Repeatability:** nsys 10× CV **0.14%**; ncu 3× CV **0.033%**.
-- **ncu:** DRAM ~**6.4%**, SM/Memory SOL ~**37.4%**, occupancy ~**16.7%** (8 warps / SM budget on this launch). Requires `--privileged` (or host `RmProfilingAdminOnly=0`) for counters.
+- **ncu (stall sections):** DRAM ~**6.3%**, SM/Memory SOL ~**37.4%**, occupancy ~**16.7%**. Dominant warp stall **`math_pipe_throttle` (47.4%)**, then **`mio_throttle` (20.0%)**; `long_scoreboard` 4.8%, `barrier` 3.0%, `lg_throttle` 0.1%. Requires `--privileged` for counters; do **not** rely on `--set basic` alone for stall naming.
 - **Artifacts:** `test_matmul_nsys.*`, `test_matmul_ncu.*`, `irs/` under `workspace/profile_01/`.

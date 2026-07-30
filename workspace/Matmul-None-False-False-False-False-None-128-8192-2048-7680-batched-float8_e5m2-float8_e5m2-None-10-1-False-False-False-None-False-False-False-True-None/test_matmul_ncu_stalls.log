@@ -1,3 +1,9 @@
+==PROF== Connected to process 113 (/usr/bin/python3.12)
+==PROF== Profiling "_matmul_NNN_fp8e5xfp8e5xfp8e5_128x256x128x1": 0%....50%....100% - 18 passes
+.                                                                        [100%]
+1 passed in 13.02s
+==PROF== Disconnected from process 113
+==PROF== Report: /Volumes/case_sensitive_workspace/triton/workspace/Matmul-None-False-False-False-False-None-128-8192-2048-7680-batched-float8_e5m2-float8_e5m2-None-10-1-False-False-False-None-False-False-False-True-None/test_matmul_ncu_stalls.ncu-rep
 [113] python3.12@127.0.0.1
   _matmul_NNN_fp8e5xfp8e5xfp8e5_128x256x128x1 (5120, 1, 1)x(256, 1, 1), Device 0, CC 12.0, Invocations 1
     Section: Compute Workload Analysis
@@ -109,19 +115,3 @@
   If aggregating across varying launch configurations (like shared memory, cache config settings), the arithmetic    
   mean can be misleading and looking at the individual results is recommended instead.                               
 
-| Stall reason | Avg warps (per issue-active) | Share of warp latency |
-| ------------ | ---------------------------- | --------------------- |
-| `math_pipe_throttle` | 9.1472 | **47.4%** |
-| `mio_throttle` | 3.8479 | **20.0%** |
-| `wait` | 2.7528 | **14.3%** |
-| `long_scoreboard` | 0.9221 | **4.8%** |
-| `barrier` | 0.5792 | **3.0%** |
-| `not_selected` | 0.5377 | **2.8%** |
-| `short_scoreboard` | 0.4492 | **2.3%** |
-| `lg_throttle` | 0.0227 | **0.1%** |
-| `drain` | 0.0138 | **0.1%** |
-| `dispatch_stall` | 0.0032 | **0.0%** |
-| `tex_throttle` | 0.0000 | **0.0%** |
-| `no_instruction` | 0.0148 | **0.1%** |
-
-Warp cycles per issued instruction: **19.28**. Eligible warps/cycle: **0.159**.
