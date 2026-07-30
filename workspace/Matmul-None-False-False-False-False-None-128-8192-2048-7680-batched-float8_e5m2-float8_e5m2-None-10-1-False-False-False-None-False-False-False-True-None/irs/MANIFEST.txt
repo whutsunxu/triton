@@ -1,0 +1,17 @@
+IR dumps for test_matmul.py::test_op
+kernel: _matmul_NNN_fp8e5xfp8e5xfp8e5_128x256x128x1
+source: third_party/nvidia/backend/compiler.py (perf_ana-style dump points)
+
+01_after_ttir_add_loop_unroll.ttir
+  after: passes.ttir.add_loop_unroll(pm)  [end of make_ttir]
+
+02_after_ttnvgpuir_add_lower_mma.ttgir
+  after: nvidia.passes.ttnvgpuir.add_lower_mma(pm)
+
+03_after_llvm_optimize_module_O3.llir
+  after: llvm.optimize_module(llvm_mod, llvm.OPTIMIZE_O3)
+
+04_after_llvm_translate_to_asm.ptx
+  after: llvm.translate_to_asm(...)
+
+Env to reproduce: TRITON_PERF_IR_DUMP=<dir> TRITON_ALWAYS_COMPILE=1

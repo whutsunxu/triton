@@ -1,0 +1,85 @@
+==PROF== Connected to process 3533 (/usr/bin/python3.12)
+==PROF== Profiling "_matmul_NNN_fp8e5xfp8e5xfp8e5_128x256x128x1": 0%....50%....100% - 9 passes
+.                                                                        [100%]
+1 passed in 7.31s
+==PROF== Disconnected from process 3533
+==PROF== Report: /Volumes/case_sensitive_workspace/triton/workspace/profile_01/test_matmul_ncu_run3.ncu-rep
+[3533] python3.12@127.0.0.1
+  _matmul_NNN_fp8e5xfp8e5xfp8e5_128x256x128x1 (5120, 1, 1)x(256, 1, 1), Device 0, CC 12.0, Invocations 1
+    Section: GPU Speed Of Light Throughput
+    ----------------------- ----------- ------------ ------------ ------------
+    Metric Name             Metric Unit      Minimum      Maximum      Average
+    ----------------------- ----------- ------------ ------------ ------------
+    DRAM Frequency                  Ghz        13.79        13.79        13.79
+    SM Frequency                    Ghz         2.40         2.40         2.40
+    Elapsed Cycles                cycle 112685664.00 112685664.00 112685664.00
+    Memory Throughput                 %        37.39        37.39        37.39
+    DRAM Throughput                   %         6.43         6.43         6.43
+    Duration                         ms        46.91        46.91        46.91
+    L1/TEX Cache Throughput           %        37.60        37.60        37.60
+    L2 Cache Throughput               %        15.99        15.99        15.99
+    SM Active Cycles              cycle 112001041.22 112001041.22 112001041.22
+    Compute (SM) Throughput           %        37.39        37.39        37.39
+    ----------------------- ----------- ------------ ------------ ------------
+
+    Section: GPU and Memory Workload Distribution
+    -------------------------- ----------- -------------- -------------- --------------
+    Metric Name                Metric Unit        Minimum        Maximum        Average
+    -------------------------- ----------- -------------- -------------- --------------
+    Average DRAM Active Cycles       cycle    41603904.00    41603904.00    41603904.00
+    Total DRAM Elapsed Cycles        cycle  2586996736.00  2586996736.00  2586996736.00
+    Average L1 Active Cycles         cycle   112001041.22   112001041.22   112001041.22
+    Total L1 Elapsed Cycles          cycle  4055014932.00  4055014932.00  4055014932.00
+    Average L2 Active Cycles         cycle    69766863.69    69766863.69    69766863.69
+    Total L2 Elapsed Cycles          cycle  1616991024.00  1616991024.00  1616991024.00
+    Average SM Active Cycles         cycle   112001041.22   112001041.22   112001041.22
+    Total SM Elapsed Cycles          cycle  4055014932.00  4055014932.00  4055014932.00
+    Average SMSP Active Cycles       cycle   111993542.54   111993542.54   111993542.54
+    Total SMSP Elapsed Cycles        cycle 16220059728.00 16220059728.00 16220059728.00
+    -------------------------- ----------- -------------- -------------- --------------
+
+    Section: Launch Statistics
+    -------------------------------- --------------- ---------- ---------- ----------
+    Metric Name                          Metric Unit    Minimum    Maximum    Average
+    -------------------------------- --------------- ---------- ---------- ----------
+    Block Size                                           256.00     256.00     256.00
+    Cluster Size                                           0.00       0.00       0.00
+    Grid Size                                           5120.00    5120.00    5120.00
+    Preferred Cluster Size                                 0.00       0.00       0.00
+    Registers Per Thread             register/thread     255.00     255.00     255.00
+    Shared Memory Configuration Size           Kbyte      65.54      65.54      65.54
+    Driver Shared Memory Per Block       Kbyte/block       1.02       1.02       1.02
+    Dynamic Shared Memory Per Block      Kbyte/block      49.15      49.15      49.15
+    Static Shared Memory Per Block        byte/block       0.00       0.00       0.00
+    # SMs                                         SM      36.00      36.00      36.00
+    Stack Size                                          1024.00    1024.00    1024.00
+    Threads                                   thread 1310720.00 1310720.00 1310720.00
+    # TPCs                                                18.00      18.00      18.00
+    Uses Green Context                                     0.00       0.00       0.00
+    Waves Per SM                                         142.22     142.22     142.22
+    -------------------------------- --------------- ---------- ---------- ----------
+
+    Section: Occupancy
+    ------------------------------- ----------- ------- ------- -------
+    Metric Name                     Metric Unit Minimum Maximum Average
+    ------------------------------- ----------- ------- ------- -------
+    Max Active Clusters                 cluster    0.00    0.00    0.00
+    Max Cluster Size                      block    8.00    8.00    8.00
+    Overall GPU Occupancy                     %    0.00    0.00    0.00
+    Cluster Occupancy                         %    0.00    0.00    0.00
+    Block Limit Barriers                  block   24.00   24.00   24.00
+    Block Limit SM                        block   24.00   24.00   24.00
+    Block Limit Registers                 block    1.00    1.00    1.00
+    Block Limit Shared Mem                block    1.00    1.00    1.00
+    Block Limit Warps                     block    6.00    6.00    6.00
+    Theoretical Active Warps per SM        warp    8.00    8.00    8.00
+    Theoretical Occupancy                     %   16.67   16.67   16.67
+    Achieved Occupancy                        %   16.66   16.66   16.66
+    Achieved Active Warps Per SM           warp    8.00    8.00    8.00
+    ------------------------------- ----------- ------- ------- -------
+
+  Note: The shown averages are calculated as the arithmetic mean of the metric values after the evaluation of the    
+  metrics for each individual kernel launch.                                                                         
+  If aggregating across varying launch configurations (like shared memory, cache config settings), the arithmetic    
+  mean can be misleading and looking at the individual results is recommended instead.                               
+
