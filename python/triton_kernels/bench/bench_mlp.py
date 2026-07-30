@@ -101,7 +101,7 @@ BENCH_MLP_SEED = 42
 
 
 def bench_mlp(batch_per_expt, dim1, dim2, n_expts_tot, n_expts_act, x_dtype, w_dtype, EP, shuffle_mx4=False,
-              num_stages_fc1=None, num_stages_fc2=None, epilogue_subtile_fc1=None):
+              num_stages_fc1=None, num_stages_fc2=None, epilogue_subtile_fc1=None, profile_mode=False):
     assert n_expts_tot % EP == 0
     rank = torch.distributed.get_rank()
     n_ranks = torch.distributed.get_world_size()
@@ -202,6 +202,16 @@ def bench_mlp(batch_per_expt, dim1, dim2, n_expts_tot, n_expts_act, x_dtype, w_d
             n_expts_act, expt_assignment, rank, symm_mem_pool, fc1_constraints=fc1_constraints,
             fc2_constraints=fc2_constraints)
     torch.cuda.synchronize()
+    if profile_mode:
+        # Timed iteration for nsys/ncu; skip proton/roofline follow-ups (extra GPU work).
+        run_mlp(x_dp_local_bf16, x_dp_local_fp8,  #
+                wg_global, bg_global, pcg,  #
+                w1_ep_local, b1_ep_local, pc1, act1,  #
+                w2_ep_local, b2_ep_local, pc2,  #
+                n_expts_act, expt_assignment, rank, symm_mem_pool, fc1_constraints=fc1_constraints,
+                fc2_constraints=fc2_constraints)
+        torch.cuda.synchronize()
+        return None
     '''
     proton.start(str(fpath), hook="triton")
     for i in range(1):
@@ -258,6 +268,8 @@ if __name__ == "__main__":
     torch.distributed.init_process_group(backend="nccl", world_size=world_size, device_id=torch.device(local_rank))
     parser = argparse.ArgumentParser()
     parser.add_argument("--quantized", action="store_true", default=True)
+    parser.add_argument("--profile-only", action="store_true",
+                        help="Warmup + one run_mlp only; skip roofline sweep/plot (cleaner nsys/ncu)")
     args = parser.parse_args()
     # set dtypes
     dense_dtypes = ["fp8", "fp8"]
@@ -275,7 +287,11 @@ if __name__ == "__main__":
     #   FC1 5stg:  scenario 4 → 5
 
     # 1. FP8 baseline
-    roofline_mlp(batch_sizes, x_dtype=dense_dtypes[0], w_dtype=dense_dtypes[1], **moe_args)
+    if args.profile_only:
+        bench_mlp(64, x_dtype=parse_dtype(dense_dtypes[0]), w_dtype=parse_dtype(dense_dtypes[1]),
+                  profile_mode=True, **moe_args)
+    else:
+        roofline_mlp(batch_sizes, x_dtype=dense_dtypes[0], w_dtype=dense_dtypes[1], **moe_args)
     '''
     # 2. MX4 baseline
     roofline_mlp(batch_sizes, x_dtype=quantized_dtypes[0], w_dtype=quantized_dtypes[1], **moe_args)
