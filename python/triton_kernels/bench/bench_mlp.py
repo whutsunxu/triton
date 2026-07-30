@@ -288,8 +288,9 @@ if __name__ == "__main__":
 
     # 1. FP8 baseline
     if args.profile_only:
+        profile_args = {k: v for k, v in moe_args.items() if k != "name"}
         bench_mlp(64, x_dtype=parse_dtype(dense_dtypes[0]), w_dtype=parse_dtype(dense_dtypes[1]),
-                  profile_mode=True, **moe_args)
+                  profile_mode=True, **profile_args)
     else:
         roofline_mlp(batch_sizes, x_dtype=dense_dtypes[0], w_dtype=dense_dtypes[1], **moe_args)
     '''
