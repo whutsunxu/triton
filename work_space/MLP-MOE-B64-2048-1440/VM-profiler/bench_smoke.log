@@ -1,0 +1,3 @@
+bench --profile-only: OK (warmup + 1 timed run_mlp; no roofline/plot GPU work)
+torchrun exit code: 0
+VM: RTX 5060 Ti, jasonsun11/ir_dev:cuda13_v2, perf_ana @ e3520ce53

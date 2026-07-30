@@ -1,0 +1,23 @@
+==PROF== Connected to process 268 (/usr/bin/python3.12)
+==PROF== Connected to process 300 (/usr/bin/python3.12)
+==PROF== Profiling "_matmul_NNT_fp32xbf16xbf16_128x128x64x2": 0%
+==WARNING== Backing up device memory in system memory. Kernel replay might be slow. Consider using "--replay-mode application" to avoid memory save-and-restore.
+....50%....100% - 9 passes
+==PROF== Profiling "_matmul_NNT_fp32xbf16xbf16_128x128x64x2": 0%....50%....100% - 9 passes
+==PROF== Profiling "_reduce_forward": 0%....50%....100% - 9 passes
+==PROF== Profiling "_topk_forward": 0%....50%....100% - 9 passes
+==PROF== Profiling "_convert_dp_to_ep": 0%....50%....100% - 9 passes
+==PROF== Profiling "_p_matmul_NNT_fp8e4nvxfp8e4nvxfp8e4nv_64x256x128x1_swiglu": 0%....50%....100% - 9 passes
+==PROF== Profiling "_p_matmul_NNT_fp8e4nvxfp8e4nvxfp8e4nv_64x256x128x1": 0%....50%....100% - 9 passes
+==PROF== Profiling "_convert_ep_to_dp": 0%....50%....100% - 9 passes
+==PROF== Profiling "_reduce_forward": 0%....50%....100% - 9 passes
+==PROF== Profiling "_matmul_NNT_fp32xbf16xbf16_128x128x64x2": 0%....50%....100% - 9 passes
+==PROF== Profiling "_reduce_forward": 0%....50%....100% - 9 passes
+==PROF== Profiling "_topk_forward": 0%....50%....100% - 9 passes
+==PROF== Profiling "_convert_dp_to_ep": 0%....50%....100% - 9 passes
+==PROF== Profiling "_p_matmul_NNT_fp8e4nvxfp8e4nvxfp8e4nv_64x256x128x1_swiglu": 0%....50%....100% - 9 passes
+==PROF== Profiling "_p_matmul_NNT_fp8e4nvxfp8e4nvxfp8e4nv_64x256x128x1": 0%....50%....100% - 9 passes
+==PROF== Profiling "_convert_ep_to_dp": 0%....50%....100% - 9 passes
+==PROF== Disconnected from process 300
+==PROF== Disconnected from process 268
+==PROF== Report: /Volumes/case_sensitive_workspace/triton/work_space/MLP-MOE-B64-2048-1440/VM-profiler/ncu_bench_mlp_basic.ncu-rep
