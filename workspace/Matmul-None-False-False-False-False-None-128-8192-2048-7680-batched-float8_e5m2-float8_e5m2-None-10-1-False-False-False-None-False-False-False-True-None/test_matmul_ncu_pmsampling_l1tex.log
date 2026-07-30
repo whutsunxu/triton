@@ -1,0 +1,6 @@
+==PROF== Connected to process 542 (/usr/bin/python3.12)
+==ERROR== Only single-pass PM sampling configs are supported, but sampling group sampling_cmdline_1 requires 4 passes.
+
+==ERROR== Failed to profile "_matmul_NNN_fp8e5xfp8e5xfp8e5..." in process 542
+==PROF== Trying to shutdown target application
+==ERROR== The application returned an error code (9).

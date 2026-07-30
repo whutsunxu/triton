@@ -1,0 +1,6 @@
+==PROF== Connected to process 477 (/usr/bin/python3.12)
+==PROF== Profiling "_matmul_NNN_fp8e5xfp8e5xfp8e5_128x256x128x1": 0%....50%....100% - 3 passes
+.                                                                        [100%]
+1 passed in 7.01s
+==PROF== Disconnected from process 477
+==PROF== Report: /Volumes/case_sensitive_workspace/triton/workspace/Matmul-None-False-False-False-False-None-128-8192-2048-7680-batched-float8_e5m2-float8_e5m2-None-10-1-False-False-False-None-False-False-False-True-None/test_matmul_ncu_pmsampling_tensor.ncu-rep
