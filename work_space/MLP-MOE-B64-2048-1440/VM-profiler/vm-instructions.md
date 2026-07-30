@@ -68,18 +68,39 @@ ncu --set detailed --force-overwrite --target-processes all --kernel-name-base d
 '
 ```
 
-### Nsight Systems (optional)
+# Nsight Systems (same `--profile-only` script)
 
-Bundled `nsys` is at `/opt/nvidia/nsight-compute/2025.3.0/host/target-linux-x64/nsys`. In this image, `nsys profile` often writes only `.qdstrm` and fails import (`Importer error`). Prefer **ncu** on this VM. If needed:
+Use **standalone Nsight Systems** (not the `nsys` bundled inside Nsight Compute — that one only writes broken `.qdstrm`).
+
+On the VM host, install once: `apt install nsight-systems-2025.3.2`
+
+Inside the container, mount host Nsight Systems and profile:
 
 ```bash
-nsys profile --force-overwrite=true --stats=true --trace=cuda \
-  --output=$OUT/nsys_bench_mlp \
+docker run --rm \
+  -v /root/.ssh:/root/.ssh:ro \
+  -v /root/triton/work_space/MLP-MOE-B64-2048-1440/VM-profiler:/out \
+  -v /opt/nvidia/nsight-systems:/opt/nvidia/nsight-systems:ro \
+  --gpus all --cap-add=SYS_ADMIN \
+  -w /Volumes/case_sensitive_workspace/triton \
+  jasonsun11/ir_dev:cuda13_v2 bash -lc '
+export GIT_SSH_COMMAND="ssh -i /root/.ssh/id_ed25519 -o IdentitiesOnly=yes"
+export PATH=/opt/nvidia/nsight-systems/2025.3.2/target-linux-x64:/usr/local/cuda/bin:/Volumes/case_sensitive_workspace/venv/bin:$PATH
+export PYTHONPATH=./python/triton_kernels
+export TRITON_PROTON_DISABLE=1
+git fetch origin perf_ana && git reset --hard origin/perf_ana
+
+nsys profile --force-overwrite=true --stats=true \
+  --trace=cuda,nvtx,osrt,cudnn,cublas \
+  --cuda-memory-usage=true --sample=none --cpuctxsw=none \
+  --output=/out/nsys_bench_mlp \
   env PYTHONPATH=./python/triton_kernels/ TRITON_PROTON_DISABLE=1 \
-  torchrun --nproc-per-node=1 python/triton_kernels/bench/bench_mlp.py --profile-only
+  torchrun --nproc-per-node=1 python/triton_kernels/bench/bench_mlp.py --profile-only \
+  2>&1 | tee /out/nsight_perf.log
+'
 ```
 
-Do **not** commit `*.qdstrm` (multi-GB).
+Produces `nsys_bench_mlp.nsys-rep`, `nsys_bench_mlp.sqlite`, and `nsight_perf.log` (with `--stats` tables).
 
 ## NCU requirements
 
@@ -101,6 +122,9 @@ git push origin perf_ana
 | File | Description |
 |------|-------------|
 | `bench_smoke.log` | `--profile-only` bench stdout |
+| `nsys_bench_mlp.nsys-rep` | Nsight Systems report (`--profile-only`) |
+| `nsys_bench_mlp.sqlite` | SQLite backing store for nsys report |
+| `nsight_perf.log` | nsys console output + `--stats` tables |
 | `ncu_bench_mlp_basic.ncu-rep` | NCU basic metrics, all MoE kernels |
 | `ncu_bench_mlp_detailed.ncu-rep` | NCU detailed metrics, `_p_matmul*` only |
 | `ncu_basic_run.log` / `ncu_detailed_run.log` | NCU console output |
@@ -109,6 +133,6 @@ git push origin perf_ana
 ## VM run results (2026-07-30)
 
 - Bench `--profile-only`: **OK**
+- nsys (`bench_mlp.py --profile-only`): **OK** — `nsys_bench_mlp.nsys-rep` (1.3 MB), `nsys_bench_mlp.sqlite` (4.4 MB); MoE kernels visible (`_p_matmul*`, `_matmul_NNT*`, `_topk_forward`, `_convert_*`, `_reduce_forward`)
 - NCU basic: **OK** (~1.4 MB `.ncu-rep`, 9 passes per kernel)
 - NCU detailed: **OK** (~4.2 MB `.ncu-rep`, 21 passes, `_p_matmul*` kernels)
-- nsys: `.qdstrm` only; importer error — not suitable for archive

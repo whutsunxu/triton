@@ -1,6 +1,0 @@
-Importer error status: An unknown error occurred.
-Unable to retrieve the importer version: skipping importation of the QDSTRM file.
-Collecting data...
-Generating '/tmp/nsys-report-e4a2.qdstrm'
-Generated:
-	/Volumes/case_sensitive_workspace/triton/work_space/MLP-MOE-B64-2048-1440/VM-profiler/nsys_bench_mlp.qdstrm
