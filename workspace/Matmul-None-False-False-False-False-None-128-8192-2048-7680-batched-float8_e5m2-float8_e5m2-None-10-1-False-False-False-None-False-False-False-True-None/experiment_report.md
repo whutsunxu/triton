@@ -11,6 +11,8 @@ Frame adapted from [`perf_ana` MLP-MoE report](https://github.com/whutsunxu/trit
 ### Software
 
 
+**Table: Software stack versions**
+
 | Component              | Version                             | Source                                                        |
 | ---------------------- | ----------------------------------- | ------------------------------------------------------------- |
 | NVIDIA Driver          | 580.95.05                           | `nvidia-smi`                                                  |
@@ -27,6 +29,8 @@ Frame adapted from [`perf_ana` MLP-MoE report](https://github.com/whutsunxu/trit
 ### Hardware
 
 
+**Table: GPU hardware overview**
+
 | Item               | Value                                     |
 | ------------------ | ----------------------------------------- |
 | GPU                | NVIDIA GeForce RTX 5060 Ti                |
@@ -40,7 +44,21 @@ Frame adapted from [`perf_ana` MLP-MoE report](https://github.com/whutsunxu/trit
 | SM frequency (peak model) | **2.40 GHz** (NCU measured during this kernel) |
 | Memory interface   | 128-bit GDDR7                             |
 
+#### SM on-chip resources (CC 12.0)
 
+Limits from the [NVIDIA Blackwell Tuning Guide](https://docs.nvidia.com/cuda/blackwell-tuning-guide/) (consumer / CC 12.0):
+
+**Table: SM on-chip resource limits (CC 12.0)**
+
+| Resource | Per SM | Per CTA (thread block) | Notes |
+| -------- | ------ | ---------------------- | ----- |
+| Register file | **65536** × 32-bit regs (**64K**) | ≤ **255** regs/thread | Occupancy: `floor(65536 / (regs/thread × threads/CTA))` CTAs |
+| Max resident warps | **48** | — | 4 schedulers × 12 warps |
+| Max resident CTAs | **32** | — | Usually hit regs/SMEM first |
+| L1 + SMEM pool | **128 KB** | — | Carveout split L1 vs SMEM at runtime |
+| Shared memory | ≤ pool above | **≤ 99 KB** (`sharedMemPerBlockOptin`) | ~1 KB driver reserve/CTA; static default **48 KB** without opt-in |
+
+This kernel (NCU): **255 regs/thread**, **256 threads**, **~49 KB** dynamic SMEM → both **regs** and **SMEM** limit to **1 CTA/SM** (`Block Limit Registers = 1`, `Block Limit Shared Mem = 1`).
 
 
 ### Peak performance (RTX 5060 Ti 16GB)
@@ -64,6 +82,8 @@ Peak_FP8_2D  @ 2.40 GHz = 2048 * 4 * 36 * 2.40e9 = 708 TFLOPS
 
 Cross-check at boost 2.57 GHz: `2048 * 4 * 36 * 2.57e9 ≈ 759 TFLOPS`, matching NVIDIA’s **759 AI TOPS** on the 5060 Ti product page.
 
+**Table: Peak performance summary**
+
 | Metric | Peak | Meaning |
 | ------ | ---- | ------- |
 | Memory bandwidth | **448 GB/s** | GDDR7 peak |
@@ -82,6 +102,8 @@ Do **not** derive Tensor peaks from `k * Peak_FP32_1D`; TC throughput is indepen
 ### Script and launch
 
 
+**Table: Test script and launch**
+
 | Item | Value |
 | ---- | ----- |
 | Test | `python/triton_kernels/tests/test_matmul.py::test_op` |
@@ -96,6 +118,8 @@ Do **not** derive Tensor peaks from `k * Peak_FP32_1D`; TC throughput is indepen
 
 ### Workload parameters
 
+
+**Table: Workload parameters**
 
 | Parameter | Value | Notes |
 | --------- | ----- | ----- |
@@ -115,18 +139,54 @@ Do **not** derive Tensor peaks from `k * Peak_FP32_1D`; TC throughput is indepen
 | Fused SwiGLU | None | pure matmul + bias |
 
 
-### Tensor shapes (batched)
+### Tensor shapes (batched) and theoretical perf feature analysis
 
+Shapes for `mode=batched`, `n_slices=B=10`, `M=8192`, `N=2048`, `K=7680`. Sizes use 1 byte/elem (FP8) and 4 bytes/elem (FP32 bias); MB = bytes / 1e6.
 
-| Tensor | Shape | Dtype | Bytes |
-| ------ | ----- | ----- | ----- |
-| A | `[10, 8192, 7680]` | FP8 | 629.15 MB |
-| B | `[10, 7680, 2048]` | FP8 | 157.29 MB |
-| C | `[10, 8192, 2048]` | FP8 | 167.77 MB |
-| bias | `[10, 2048]` | FP32 | 0.082 MB |
+**Table: Batched tensor shapes and sizes**
+
+| Tensor | Shape | Dtype | Bytes | Formula |
+| ------ | ----- | ----- | ----- | ------- |
+| A (activation) | `[10, 8192, 7680]` | FP8 | **629.146 MB** | `B*M*K` |
+| B (weight) | `[10, 7680, 2048]` | FP8 | **157.286 MB** | `B*K*N` |
+| C (output) | `[10, 8192, 2048]` | FP8 | **167.772 MB** | `B*M*N` |
+| bias | `[10, 2048]` | FP32 | **0.082 MB** | `B*N*4` |
+| **Traffic A+B+C** | — | — | **954.204 MB** | bias excluded from DRAM traffic model |
 
 **Launch geometry (nsys / CUPTI):** grid `(5120,1,1)`, block `(256,1,1)` (= 8 warps), 255 regs/thread, 48 KiB dynamic SMEM.
-Grid check: $\lceil M/128\rceil\cdot\lceil N/256\rceil\cdot n\_slices = 64\cdot 8\cdot 10 = 5120$.
+Grid check: `ceil(M/128) * ceil(N/256) * n_slices = 64 * 8 * 10 = 5120`.
+
+Peaks used below (@ `f_SM = 2.40 GHz`, see §1): **Peak_FP8_2D = 708 TFLOPS**, **Peak_FP32_1D ≈ 22.1 TFLOPS**, **Peak_BW = 448 GB/s**.
+
+Formulas:
+
+```text
+FLOPs_2D       = 2 * B * M * N * K                         # GEMM MACs on Tensor Cores
+FLOPs_1D       = B * M * N                                 # bias add (scale mul is same order)
+Traffic        = size(A) + size(B) + size(C)               # FP8; bias excluded
+Op_2D_dens     = FLOPs_2D / Traffic
+Op_1D_dens     = FLOPs_1D / Traffic
+t_2D_theo      = FLOPs_2D / Peak_FP8_2D
+t_1D_theo      = FLOPs_1D / Peak_FP32_1D
+t_BW_theo      = Traffic / Peak_BW
+t_lower        = max(t_2D_theo, t_1D_theo, t_BW_theo)      # ideal lower bound
+Effective_BW   = Traffic / t_meas
+FLOPS_util     = (FLOPs_2D / t_meas) / Peak_FP8_2D
+```
+
+**Table: Roofline quantities for target kernel**
+
+| Quantity | Task amount | Theoretical time |
+| -------- | ----------- | ---------------- |
+| 2D FLOPs (FP8 TC) | `2*10*8192*2048*7680 = 2.577e12` | **`3.640e-3` s (3.64 ms)**  |
+| 1D FLOPs (FP32 CUDA, bias and scale introduced by convert) | `3*10*8192*2048 = 5.033e8` | **`2.28e-5` s (22.8 µs)** |
+| Traffic A+B+C | **954.204 MB** | **`2.130e-3` s (2.13 ms)**  |
+| Phys. 2D dens. (FP8 knee) | **≈1580 ops/B** (`708e12 / 448e9`) | — |
+| Phys. 1D dens. (FP32 knee) | **≈49.3 ops/B** (`22.1e12 / 448e9`) | — |
+| Ideal lower bound | `max(t_2D, t_1D, t_BW)` | **`3.640e-3` s (3.64 ms)** |
+
+**Summary:** from the above theoretical time of 2D task(on tensor core), 1D tasks(on cuda core), data traffic tasks(on
+LDGSTC), we can find the case is bounded by tensor core.
 
 ---
 
@@ -136,29 +196,29 @@ Sources: TTGIR `irs/02_after_ttnvgpuir_add_lower_mma.ttgir___matmul_NNN_fp8e5xfp
 
 ### 3.1 Parallel split at CTA level (output / batch)
 
-Problem shape (batched): $Y \in \mathbb{R}^{B \times M \times N}$ with $B{=}10$, $M{=}8192$, $N{=}2048$, reduction $K{=}7680$.
+Problem shape (batched): `Y[B, M, N]` with `B=10`, `M=8192`, `N=2048`, reduction `K=7680`.
 
 Launch (1D grid flattened to `(5120,1,1)`):
 
-$$
-\begin{aligned}
-\mathrm{grid\_m} &= \lceil M / \mathrm{BLOCK\_M}\rceil = \lceil 8192/128\rceil = 64 \\
-\mathrm{grid\_n} &= \lceil N / \mathrm{BLOCK\_N}\rceil = \lceil 2048/256\rceil = 8 \\
-\mathrm{grid} &= B \cdot \mathrm{grid\_m} \cdot \mathrm{grid\_n} \cdot \mathrm{SPLIT\_K}
-          = 10 \cdot 64 \cdot 8 \cdot 1 = \mathbf{5120}
-\end{aligned}
-$$
+```text
+grid_m = ceil(M / BLOCK_M) = ceil(8192 / 128) = 64
+grid_n = ceil(N / BLOCK_N) = ceil(2048 / 256) = 8
+grid   = B * grid_m * grid_n * SPLIT_K
+       = 10 * 64 * 8 * 1 = 5120
+```
 
 Each `pid = tl.program_id(0)` ∈ `[0, 5120)` is **one CTA**. For `mode=batched` (`RAGGED_DIMENSION is None`), `compute_pids` decodes:
 
+**Table: CTA program-id decoding**
+
 | Logical id | Range | Role |
 | ---------- | ----- | ---- |
-| `pid_s` (`pid_z`) | $0..9$ | batch / slice index |
-| `pid_m` | $0..63$ | M-tile index → rows `[pid_m·128, (pid_m+1)·128)` |
-| `pid_n` | $0..7$ | N-tile index → cols `[pid_n·256, (pid_n+1)·256)` |
-| `pid_k` | $0$ | `SPLIT_K=1` (no K-split across CTAs) |
+| `pid_s` (`pid_z`) | `0..9` | batch / slice index |
+| `pid_m` | `0..63` | M-tile index → rows `[pid_m*128, (pid_m+1)*128)` |
+| `pid_n` | `0..7` | N-tile index → cols `[pid_n*256, (pid_n+1)*256)` |
+| `pid_k` | `0` | `SPLIT_K=1` (no K-split across CTAs) |
 
-So the **5120 CTAs tile the output volume** $(B,M,N)$; K is reduced **inside** each CTA by looping over `BLOCK_K=128` tiles (`k_tiles = 7680/128 = 60`).
+So the **5120 CTAs tile the output volume** `(B, M, N)`; K is reduced **inside** each CTA by looping over `BLOCK_K=128` tiles (`k_tiles = 7680/128 = 60`).
 
 Thread layout per CTA: **8 warps × 32 threads = 256 threads** (matches NCU `Block Size = 256`).
 
@@ -172,39 +232,103 @@ MMA layout from TTGIR:
 
 Warps form a **2×4 grid** over the CTA output tile `128×256`:
 
+**Table: Warp ownership of CTA accumulator tile**
+
 | Warp coord `(w_m, w_n)` | Owns accumulator subtile |
 | ---------------------- | ------------------------ |
-| $w_m \in \{0,1\}$, $w_n \in \{0,1,2,3\}$ | $64 \times 64$ fp32 (`128/2` × `256/4`) |
+| `w_m in {0,1}`, `w_n in {0,1,2,3}` | `64×64` fp32 (`128/2` × `256/4`) |
 
 All 8 warps **share** the CTA SMEM buffers for A/B; they do **not** each own a private `128×128` / `128×256` allocation. Parallelism is over the **output (accumulator) plane**: each warp `local_load`s the A rows / B cols needed for its `64×64` from the common SMEM tiles.
 
 ### 3.3 CTA-level tiling (SMEM vs registers)
 
-| Buffer | Shape / dtype | Where | Evidence |
-| ------ | ------------- | ----- | -------- |
-| Input A (`%x`) | `1×128×128` f8E5M2 (stage depth 1) | **SMEM** | `ttg.local_alloc` → `#smem` |
-| Weight B (`%w`) | `1×128×256` f8E5M2 | **SMEM** | `ttg.local_alloc` → `#smem` |
-| Accumulator | `128×256` **fp32**, layout `#mma` | **Registers** | `scf.for` iter_arg `tensor<128x256xf32, #mma>`; **no** `local_alloc` for C |
-| Epilogue store | `128×256` f8E5M2 | registers → **global** | `tt.fp_to_fp` then `tt.store` |
+IR: `irs/02_after_ttnvgpuir_add_lower_mma.ttgir___matmul_NNN_fp8e5xfp8e5xfp8e5_128x256x128x1`. Launch opts: `num_stages=2` (`opt_flags.py` default for this path).
 
-Confirmed: the CTA output tile lives in **registers** (MMA accumulator), not SRAM. SMEM holds only the current K-slice of A (`BLOCK_M×BLOCK_K`) and B (`BLOCK_K×BLOCK_N`).
+#### SMEM (CTA shared)
+
+Only the K-pipelined **activation** and **weight** tiles are allocated in shared memory. Bias is **not** in SMEM.
+
+**Table: CTA SMEM buffer allocations**
+
+| Buffer | Role | IR `local_alloc` | Dtype | Logical tile | Bytes |
+| ------ | ---- | ---------------- | ----- | ------------ | ----- |
+| `%x` | activation (A / X) | `!ttg.memdesc<1×128×128×f8E5M2, #shared, #smem>` | FP8 E5M2 | `BLOCK_M × BLOCK_K = 128×128` | `128 * 128 * 1 = 16384` |
+| `%w` | weight (B / W) | `!ttg.memdesc<1×128×256×f8E5M2, #shared1, #smem>` | FP8 E5M2 | `BLOCK_K × BLOCK_N = 128×256` | `128 * 256 * 1 = 32768` |
+| — | bias | *(none)* | FP32 | `256` (N-vector) | **0 in SMEM** — `tt.load` from global → registers in epilogue |
+
+```text
+SMEM_tiles = 16384 + 32768 = 49152 B = 48 KiB
+```
+
+48 KB < 98 KB, less than the SM's SHMEM limiter. with num_stages=2, in total 96 KB, less than the SM's SHMEM limiter. so each SM can hold one CTA from the SHEME perspective(for better CTA scheduling, 2-4 CTA on one SM might be better.).
+
+**Note on `num_stages=2` vs alloc shape `1×…`:** launch uses `num_stages=2`, and Triton keeps `num_stages − 1` SMEM slots → IR `local_alloc` is `1×128×128` / `1×128×256` (**48 KiB** actual, matches NCU). The K-loop still does generic stage arithmetic (`idx = stage+1; if idx >= 1: idx = 0`) before `memdesc_index`, so SSA can momentarily hold `1`, but the wrap threshold equals alloc depth **1**, so only slot **0** is ever used — single-buffer, not true 0/1 ping-pong. A real double-buffer would be `2×128×128` + `2×128×256` ≈ **96 KiB** (still &lt; ~98 KB CTA SHMEM), which is the “with num_stages=2, in total 96 KB” packing view above.
+
+#### Registers
+
+No `local_alloc` for C or bias — they live in the register file. Pressure is set by **peak live set**, not the sum of every value that appears in the kernel: A/B fragment regs and epilogue (bias / scale) **reuse** the same physical registers across phases.
+
+**Phases (TTGIR + LLVM O3):**
+
+```text
+K-loop:     acc + A/B MMA fragments (+ addrs/masks)
+              bias / XScale / WScale NOT loaded yet
+
+after loop: local_dealloc %x / %w (SMEM)
+            A/B fragment regs die → free for epilogue
+
+epilogue:   acc still live
+            + load bias, XScale, WScale
+            + scale splat, bias broadcast, addf, fp_to_fp, store
+```
+
+**Per-thread footprint (from `03_after_llvm_optimize_module_O3.llir`, one `BLOCK_K` body):**
+
+**Table: Per-thread register footprint (A/B/out/bias/scale)**
+
+| Value | Source | Per-thread regs | Per-warp regs (`×32`) | Live when | Notes |
+| ----- | ------ | --------------- | --------------------- | --------- | ----- |
+| Out / acc | `128×256` fp32 `#mma` → warp `64×64` | **128** | **4096** | K-loop + epilogue | `4096/32`; dominates and spans both phases |
+| A fragments | 16× `ldmatrix.x4` | **64** | **2048** | K-loop only | warp A `64×128` fp8 → `256 B/thread` |
+| B fragments | 256× `load i8` → 64× `bitcast <4xi8>→i32` | **64** | **2048** | K-loop only | warp B `128×64` fp8 → `256 B/thread` |
+| A+B together | — | **128** | **4096** | K-loop only | this LLIR loads **all** A/B for the K-tile before 128× `mma.sync` (no micro-tile reuse) |
+| Bias broadcast | TTGIR `broadcast` → `128×256` (matches out tile) | **128** | **4096** | epilogue only | same shape as Out/acc; **reuses A/B-freed regs** after K-loop (not stacked on K-loop A/B peak) |
+| Scale broadcast | TTGIR `splat`/`mulf` → `128×256` (matches out tile) | **128** | **4096** | epilogue only | same shape as Out/acc; **reuses A/B-freed regs**; `fmul` can also overwrite acc in place |
+| **Peak K-loop** | `Out + A/B` | **256** | **8192** | K-loop | `128 + 128`; bias/scale not live |
+| **Peak epilogue** | `Out + Bias` (Scale via in-place / same A/B pool) | **256** | **8192** | epilogue | Bias takes freed A/B (`128`); Scale reuses Out or same freed pool — **not** `128+128+128` |
+| **Peak overall (w/ reuse)** | `max(K-loop, epilogue)` | **256** | **8192** | — | naive sum `128*4=512` is wrong; NCU **255**/thread ≈ this peak (+ addrs/masks) |
+
+```text
+naive (no reuse):     Out+A+B+Bias+Scale = 128+64+64+128+128 = 512 / thread
+with phase reuse:     max(Out+A/B, Out+Bias) = max(256, 256) = 256 / thread
+                      (= 8192 / warp; CTA ≈ 256*256 = 65536 ≈ full 64K → 1 CTA/SM)
+NCU compiled:         255 regs/thread
+```
+
+**Bias broadcast (TTGIR epilogue):**
+
+```text
+%bias   = tt.load … : tensor<256xf32, #blocked>
+%acc_82 = ttg.convert_layout %bias → #ttg.slice<{dim=0, parent=#mma}>
+%acc_83 = tt.expand_dims %acc_82 {axis=0} → tensor<1x256xf32, #mma>
+%acc_84 = tt.broadcast %acc_83 → tensor<128x256xf32, #mma>
+%acc_85 = arith.addf %acc_81, %acc_84   // scaled acc + bias
+```
 
 ### 3.4 Warp MMA grain (instruction-level loops)
 
-Hardware instruction (PTX): `mma.sync.aligned.m16n8k32.row.col.f32.e5m2.e5m2.f32` — grain **$16\times8\times32$**.
+Hardware instruction (PTX): `mma.sync.aligned.m16n8k32.row.col.f32.e5m2.e5m2.f32` — grain **16×8×32**.
 
 Per warp, for **one** K-tile (`BLOCK_K=128`), covering its `64×64` accumulator:
 
-$$
-\begin{aligned}
-\#M &= 64/16 = 4 \\
-\#N &= 64/8 = 8 \\
-\#K &= 128/32 = 4 \\
-\#\mathrm{mma/warp/K\text{-}tile} &= 4 \cdot 8 \cdot 4 = \mathbf{128}
-\end{aligned}
-$$
+```text
+#M = 64 / 16 = 4
+#N = 64 / 8  = 8
+#K = 128 / 32 = 4
+mma_per_warp_per_K_tile = 4 * 8 * 4 = 128
+```
 
-PTX check: the inner K-loop body (`$L__BB0_3` … branch back) contains **exactly 128** `mma.sync…m16n8k32` instructions (fully unrolled M/N/K micro-tiles for one `tt.dot`). Outer loop runs **60** times over K → $128 \times 60$ MMA issues per warp for the full reduction.
+PTX check: the inner K-loop body (`$L__BB0_3` … branch back) contains **exactly 128** `mma.sync…m16n8k32` instructions (fully unrolled M/N/K micro-tiles for one `tt.dot`). Outer loop runs **60** times over K → `128 * 60` MMA issues per warp for the full reduction.
 
 **Note on K:** warps do **not** partition K among themselves in parallel; every warp walks the same K tiles for its own `(M,N)` subtile. The “×4 on K” is sequential micro-tiling inside the warp’s MMA expansion of one `128`-wide K block.
 
@@ -212,9 +336,7 @@ PTX check: the inner K-loop body (`$L__BB0_3` … branch back) contains **exactl
 
 ## 4. Profiler Analysis
 
-### Nsight Systems (worked)
-
-From repo root inside `ir_dev`:
+### Nsight Systems
 
 ```bash
 export PATH="/Volumes/case_sensitive_workspace/venv/bin:$PATH"
@@ -233,181 +355,38 @@ nsys profile \
   > workspace/profile_01/test_matmul_nsys.log 2>&1
 ```
 
-**Artifacts** (under `workspace/profile_01/`):
+**Target kernel (nsys `cuda_gpu_kern_sum`):** `_matmul_NNN_fp8e5xfp8e5xfp8e5_128x256x128x1`
 
-| File | Role |
-| ---- | ---- |
-| `test_matmul_nsys.nsys-rep` | Nsight Systems report |
-| `test_matmul_nsys.sqlite` | SQLite backing store |
-| `test_matmul_nsys.log` | Captured nsys console + `--stats` tables |
-
-#### CUDA GPU kernel summary (full capture)
-
-From `cuda_gpu_kern_sum` on `test_matmul_nsys.nsys-rep`:
-
-| Time % | Total (ns) | Inst. | Name |
-| ------ | ---------- | ----- | ---- |
-| **54.8** | **40,781,553** | **1** | **`_matmul_NNN_fp8e5xfp8e5xfp8e5_128x256x128x1`** |
-| 19.1 | 14,204,855 | 2 | `at::native::elementwise_kernel` (PyTorch helpers) |
-| 10.9 | 8,093,059 | 2 | `neg_kernel_cuda` |
-| 7.9 | 5,867,092 | 2 | `float8_copy_kernel_cuda` |
-| 7.3 | 5,460,056 | 2 | `distribution_elementwise_grid_stride_kernel` |
-| ~0 | ≪1 µs | — | tiny fill / RNG helpers |
-
-The Triton matmul is a **single launch** and dominates GPU kernel time in this smoke profile (~55% of summed kernel time; absolute duration **40.782 ms**).
-
-#### Stability (10× nsys, earlier `workspace/nsys_fluctuation/`)
-
-| Stat | Value |
+| Item | Value |
 | ---- | ----- |
-| mean | 40.822 ms |
-| stdev | 0.058 ms (**CV 0.14%**) |
-| range (max−min)/mean | **0.40%** |
+| Launches | **1** |
+| GPU time | **40.781553 ms** (`40,781,553` ns) |
+| Stability (10×) | mean **40.822 ms**, CV **0.14%** |
 
-Duration is highly stable across repeated nsys captures.
-
-#### Roofline for the target kernel (nsys duration)
-
-Formulas:
+**Tensor-Core utilization** (vs Peak_FP8_2D @ 2.40 GHz = **708 TFLOPS**, FLOPs_2D = `2.577e12`):
 
 ```text
-FLOPs_2D       = 2 * B * M * N * K
-Traffic        = size(A) + size(B) + size(C)    # FP8; bias excluded
-Op_2D_dens     = FLOPs_2D / Traffic
-Effective_BW   = Traffic / t
-FLOPS_util     = (FLOPs_2D / t) / Peak_FP8_2D
-Peak_FP8_2D    = 2048 * 4 * 36 * f_SM           # dense TC MAC model @ f_SM
+Achieved_FP8 = FLOPs_2D / t = 2.577e12 / 40.781553e-3 = 63.19 TFLOPS
+TC_util      = Achieved_FP8 / Peak_FP8_2D = 63.19 / 708 ≈ 8.9%
+
+# equivalent: t_2D_theo / t_meas = 3.64 ms / 40.782 ms ≈ 8.9%
 ```
 
-| Quantity | Value |
-| -------- | ----- |
-| Kernel time `t` (nsys) | **40.781553 ms** |
-| 2D FLOPs | `2*10*8192*2048*7680 = 2.577e12` |
-| Traffic A+B+C | **954.204 MB** |
-| **Op 2D dens.** | **2700.7 ops/B** |
-| Phys. 2D dens. (FP8) @ 2.40 GHz | **≈1580 ops/B** (`708 TFLOPS / 448 GB/s`) |
-| **2D bound** | **Compute** (2700.7 ≫ 1580) |
-| **1D dens.** (bias adds `B*M*N`) | **0.176 ops/B** (≪ 49.4 → epilogue BW-cheap vs GEMM) |
-| Achieved 2D FP8 | **63.19 TFLOPS** |
-| **FLOPS utilization** | **≈8.9%** of **708 TFLOPS** (`Peak_FP8_2D` @ `f_SM = 2.40 GHz`) |
-| Effective bandwidth | **23.4 GB/s** (**5.2%** of 448 GB/s) |
 
-**Reading:** arithmetic intensity is still above the FP8 knee, so the kernel remains **compute-bound on paper**. DRAM is quiet (~5% of peak) from SMEM/L1/L2 reuse. Against the **Tensor-Core MAC peak** (~708 TFLOPS), achieved util is only **~8.9%** (was ~71% under the old, incorrect `4 * Peak_FP32` proxy). That aligns better with low occupancy (16.7%) and SM SOL ~37% / tensor-pipe headroom from NCU.
 
----
+### Nsight Compute
 
-### Nsight Compute (worked; privileged container)
+Key options (stall-capable; not `--set basic` alone): `--kernel-name _matmul_NNN_fp8e5xfp8e5xfp8e5_128x256x128x1`, `--launch-count 1`, sections `LaunchStats` / `Occupancy` / `SpeedOfLight` / `WorkloadDistribution` / `SchedulerStats` / `WarpStateStats` / `ComputeWorkloadAnalysis` (or `--set full`). Needs privileged / counter access. Optional PM Sampling: `--section PmSampling` + tensor/`l1tex` metrics (this kernel uses `cp.async`/L1TEX, not TMA).
 
-`--set basic` only includes LaunchStats / Occupancy / SpeedOfLight / WorkloadDistribution — **no** Warp State Statistics, Scheduler Statistics, or Compute Workload Analysis — so it **cannot** name dominant stalls (`lg_throttle`, `long_scoreboard`, `mio_throttle`, `barrier`, `math_pipe_throttle`, …).
+**SOL / occupancy:** NCU duration **~46.8 ms** (replay; prefer nsys for wall time). DRAM only **~6.3%**; SM/Memory SOL **~37%**. Theoretical occupancy **16.7%** (regs + SMEM → **1 CTA/SM**). Schedulers idle hard: **No Eligible ~89.6%**, eligible warps/scheduler **~0.16** with only **~2** active warps vs max **12** — primary concurrency problem.
 
-**Fix:** re-profile with stall-capable sections (preferred over bare `basic`):
-
-```bash
-cd /Volumes/case_sensitive_workspace/triton
-export PYTHONPATH=python/triton_kernels
-
-ncu \
-  --force-overwrite \
-  --kernel-name _matmul_NNN_fp8e5xfp8e5xfp8e5_128x256x128x1 \
-  --launch-count 1 \
-  --section LaunchStats \
-  --section Occupancy \
-  --section SpeedOfLight \
-  --section WorkloadDistribution \
-  --section SchedulerStats \
-  --section WarpStateStats \
-  --section ComputeWorkloadAnalysis \
-  -o workspace/.../test_matmul_ncu_stalls \
-  /Volumes/case_sensitive_workspace/venv/bin/python -m pytest \
-    python/triton_kernels/tests/test_matmul.py::test_op -q \
-  > workspace/.../test_matmul_ncu_stalls.log 2>&1
-```
-
-(Equivalent heavier option: `ncu --set full …`.)
-
-**Artifacts:** `test_matmul_ncu_stalls.ncu-rep` / `.log`, `test_matmul_ncu_details.log`, `ncu_stall_breakdown.md` (also synced to `test_matmul_ncu.*`).
-
-#### PM Sampling (intra-kernel Tensor / L1TEX timeline)
-
-This kernel loads via **`cp.async` (SM async-copy / L1TEX)**, not TMA (`cp.async.bulk`). NCU does **not** expose a per-instruction event Gantt of `cp.async` vs `mma.sync`; the closest timeline is **PM Sampling** (metric samples over the kernel duration).
-
-Discover valid PM metrics on the GPU first:
-
-```bash
-ncu --query-metrics-collection pmsampling | rg -i 'tensor|l1tex'
-```
-
-Capture (Tensor pipe + L1TEX; open **Details → PM Sampling** in the NCU GUI):
-
-```bash
-cd /Volumes/case_sensitive_workspace/triton
-export PYTHONPATH=python/triton_kernels
-OUT=workspace/Matmul-None-False-False-False-False-None-128-8192-2048-7680-batched-float8_e5m2-float8_e5m2-None-10-1-False-False-False-None-False-False-False-True-None
-
-ncu \
-  --force-overwrite \
-  --kernel-name _matmul_NNN_fp8e5xfp8e5xfp8e5_128x256x128x1 \
-  --launch-count 1 \
-  --section PmSampling \
-  --metrics pmsampling:sm__pipe_tensor_cycles_active_realtime_v2.avg.pct_of_peak_sustained_elapsed,\
-pmsampling:l1tex__throughput.avg.pct_of_peak_sustained_elapsed \
-  -o ${OUT}/test_matmul_ncu_pmsampling \
-  /Volumes/case_sensitive_workspace/venv/bin/python -m pytest \
-    python/triton_kernels/tests/test_matmul.py::test_op -q \
-  > ${OUT}/test_matmul_ncu_pmsampling.log 2>&1
-```
-
-Notes:
-
-- Exact `pmsampling:…` metric names vary by arch (CC 12.0 / Blackwell); if a metric is rejected, pick a matching `sm__pipe_tensor_*` / `l1tex__*` name from `--query-metrics-collection pmsampling`.
-- Prefer the GUI timeline; CLI raw timestamps may use a different origin than the GUI (GUI normalizes to the first sample / kernel window).
-- Requires the same privileged / `RmProfilingAdminOnly=0` setup as other NCU counter collects.
-- **Expected artifacts:** `test_matmul_ncu_pmsampling.ncu-rep`, `test_matmul_ncu_pmsampling.log` (not collected yet in this profile dir).
-
-#### SOL / occupancy (stall-capable capture)
-
-| Metric | Value |
-| ------ | ----- |
-| Duration (NCU SOL) | **46.82 ms** |
-| DRAM Throughput | **~6.3%** |
-| Memory / SM Throughput | **~37.4%** |
-| Grid / Block | 5120 / 256 |
-| Theoretical occupancy | **16.7%** (limited by registers + shared memory) |
-| No Eligible (scheduler) | **89.6%** of cycles |
-| Eligible warps / scheduler | **0.16** (of 2.00 active) |
-| Warp cycles per issued inst | **19.28** |
-
-#### Warp stall breakdown (verified present)
-
-From `WarpStateStats` metrics `smsp__average_warps_issue_stalled_*_per_issue_active`:
-
-| Stall reason | Avg warps (per issue-active) | Share of warp latency |
-| ------------ | ---------------------------- | --------------------- |
-| `math_pipe_throttle` | 9.1472 | **47.4%** |
-| `mio_throttle` | 3.8479 | **20.0%** |
-| `wait` | 2.7528 | **14.3%** |
-| `long_scoreboard` | 0.9221 | **4.8%** |
-| `barrier` | 0.5792 | **3.0%** |
-| `not_selected` | 0.5377 | **2.8%** |
-| `short_scoreboard` | 0.4492 | **2.3%** |
-| `lg_throttle` | 0.0227 | **0.1%** |
-| `drain` / `dispatch_stall` / `tex_throttle` | ≈0 | ≈0% |
-
-**Dominant stall:** `math_pipe_throttle` (~47% of issue latency) — execution pipe / oversubscribed math pipeline; Tensor pipe is highest-utilized in Compute Workload Analysis (~31% active cycles). Secondary: `mio_throttle` (~20%), then `wait` (~14%). Memory-side `long_scoreboard` / `lg_throttle` / `barrier` are present but small.
-
-#### Earlier `--set basic` stability (3 runs)
-
-| Run | Duration | DRAM % | SM % |
-| --- | -------- | ------ | ---- |
-| 1 | 46.880 ms | 6.44 | 37.40 |
-| 2 | 46.900 ms | 6.42 | 37.39 |
-| 3 | 46.910 ms | 6.43 | 37.39 |
-
-- **CV (duration):** 0.033%. NCU duration remains ~15% above nsys due to replay; use nsys for wall-clock GPU time.
+**Warp stalls:** Dominated by **`math_pipe_throttle` (~47%)**, then **`mio_throttle` (~20%)** and **`wait` (~14%)**. Memory-side stalls (`long_scoreboard` ~5%, `barrier` ~3%, `lg_throttle` ~0.1%) are small — not DRAM-bound; issue latency is pipe / MIO under low warp concurrency.
 
 ### IR dumps (compiler pass snapshots)
 
 Dumped under `workspace/profile_01/irs/` after the NVIDIA backend points aligned with [`compiler.py` on `perf_ana`](https://github.com/whutsunxu/triton/blob/perf_ana/third_party/nvidia/backend/compiler.py):
+
+**Table: IR dump files by compiler pass**
 
 | File prefix | After pass |
 | ----------- | ---------- |
@@ -422,8 +401,7 @@ See `irs/MANIFEST.txt`. Env: `TRITON_PERF_IR_DUMP=…/irs TRITON_ALWAYS_COMPILE=
 
 ## 5. Summary
 
-- **Workload:** batched FP8×FP8 matmul $B{=}10$, $M{=}8192$, $N{=}2048$, $K{=}7680$, tile **128×256×128**, kernel `_matmul_NNN_fp8e5xfp8e5xfp8e5_128x256x128x1`.
-- **nsys:** single-launch GPU time **40.782 ms**; ~**8.9%** of dense **FP8 2D** TC peak at **2.40 GHz** (**63.2 / 708 TFLOPS**, `2048*4*36*f`); op intensity **~2701 ops/B** → **compute-bound** vs FP8 knee **~1580**; effective DRAM BW only **~5%** of 448 GB/s (cache/SMEM reuse). Boost-clock cross-check: `2048*4*36*2.57e9 ≈ 759 TFLOPS` = NVIDIA **759 AI TOPS**.
-- **Repeatability:** nsys 10× CV **0.14%**; ncu 3× CV **0.033%**.
-- **ncu (stall sections):** DRAM ~**6.3%**, SM/Memory SOL ~**37.4%**, occupancy ~**16.7%**. Dominant warp stall **`math_pipe_throttle` (47.4%)**, then **`mio_throttle` (20.0%)**; `long_scoreboard` 4.8%, `barrier` 3.0%, `lg_throttle` 0.1%. Requires `--privileged` for counters; do **not** rely on `--set basic` alone for stall naming. For an intra-kernel Tensor/L1TEX timeline use **`--section PmSampling`** (see §4); this kernel uses `cp.async`/L1TEX, not TMA.
-- **Artifacts:** `test_matmul_nsys.*`, `test_matmul_ncu.*`, `irs/` under this profile dir; PM Sampling command prepared as `test_matmul_ncu_pmsampling.*` (run when collecting the timeline).
+**Perf problems**
+
+1. **No ping-pong SMEM buffer** — `num_stages=2` but IR alloc is `1×…` (only stage index 0); need to enable true double-buffering (`2×…` / effective ping-pong).
+2. **Too few live warps per scheduler** — only **~2** eligible/active warps per warp scheduler vs HW max **12** (`<<< 12`); need to tune (tile / regs / occupancy / multi-CTA) to raise concurrency.
