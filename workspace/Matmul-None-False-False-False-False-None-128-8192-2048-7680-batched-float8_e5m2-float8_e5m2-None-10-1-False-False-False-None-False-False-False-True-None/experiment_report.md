@@ -1,7 +1,7 @@
 # Batched FP8 Matmul Experiment Analysis
 
-Target kernel: `_matmul_NNN_fp8e5xfp8e5xfp8e5_128x256x128x1`  
-Profile dir: `work_space` → `/Volumes/case_sensitive_workspace/triton/workspace/profile_01/`  
+Target kernel: `_matmul_NNN_fp8e5xfp8e5xfp8e5_128x256x128x1`
+Profile dir: `work_space` → `/Volumes/case_sensitive_workspace/triton/workspace/profile_01/`
 Frame adapted from [`perf_ana` MLP-MoE report](https://github.com/whutsunxu/triton/blob/perf_ana/work_space/MLP-MOE-B64-2048-1440/experiment_report.md).
 
 ---
@@ -35,7 +35,8 @@ Frame adapted from [`perf_ana` MLP-MoE report](https://github.com/whutsunxu/trit
 | SMs                | 36 (`torch.cuda.get_device_properties`)  |
 | L2 cache           | 32 MB                                     |
 | CUDA Cores         | 4608                                      |
-| Boost clock (ref.) | 2.57 GHz (NVIDIA product page)            |
+| Tensor Cores       | **144** (4 per SM × 36 SMs)               |
+| Boost clock (ref.) | 2.57 GHz ([NVIDIA 5060 family](https://www.nvidia.com/en-eu/geforce/graphics-cards/50-series/rtx-5060-family/)); **759 AI TOPS** |
 | SM frequency (peak model) | **2.40 GHz** (NCU measured during this kernel) |
 | Memory interface   | 128-bit GDDR7                             |
 
@@ -44,25 +45,35 @@ Frame adapted from [`perf_ana` MLP-MoE report](https://github.com/whutsunxu/trit
 
 ### Peak performance (RTX 5060 Ti 16GB)
 
-Same roof model as the [MLP-MoE EP=1 report](https://github.com/whutsunxu/triton/blob/perf_ana/work_space/MLP-MOE-B64-2048-1440/experiment_report.md), but **FLOPS peaks use the profiled SM clock $f_{\mathrm{SM}}{=}2.40\,\mathrm{GHz}$** (not the 2.57 GHz marketing boost):
+Peaks use the profiled SM clock `f_SM = 2.40 GHz` (not 2.57 GHz boost), unless noted.
 
-$$
-\mathrm{FP32}_{1\mathrm{D}} \approx N_{\mathrm{cores}} \times f_{\mathrm{SM}} \times 2
-= 4608 \times 2.40\,\mathrm{GHz} \times 2 \approx 22.1\,\mathrm{TFLOPS}
-$$
+**2D (Tensor Cores, dense)** — Blackwell dense MAC rates; 1 MAC = 2 FLOPs; 4 TC/SM:
 
-Dense Tensor peaks follow the same scaling as before ($\mathrm{BF16}_{2\mathrm{D}}{\approx}2\times\mathrm{FP32}_{1\mathrm{D}}$, $\mathrm{FP8}_{2\mathrm{D}}{\approx}4\times\mathrm{FP32}_{1\mathrm{D}}$):
+```text
+Arch (dense):  BF16/FP16 = 512 MACs/TC/cycle  → 1024 FLOPs/TC/cycle
+               FP8       = 1024 MACs/TC/cycle → 2048 FLOPs/TC/cycle
+
+Peak_2D = (FLOPs/TC/cycle) * (TC/SM) * (#SM) * f
+        = (FLOPs/TC/cycle) * 4 * 36 * f
+```
+
+```text
+Peak_BF16_2D @ 2.40 GHz = 1024 * 4 * 36 * 2.40e9 = 354 TFLOPS
+Peak_FP8_2D  @ 2.40 GHz = 2048 * 4 * 36 * 2.40e9 = 708 TFLOPS
+```
+
+Cross-check at boost 2.57 GHz: `2048 * 4 * 36 * 2.57e9 ≈ 759 TFLOPS`, matching NVIDIA’s **759 AI TOPS** on the 5060 Ti product page.
 
 | Metric | Peak | Meaning |
 | ------ | ---- | ------- |
 | Memory bandwidth | **448 GB/s** | GDDR7 peak |
-| **2D** BF16 (Tensor Core, dense) | **≈44.2 TFLOPS** | Matrix / Tensor Core MMA peak (BF16) @ 2.40 GHz |
-| **2D** FP8 (Tensor Core, dense) | **≈88.5 TFLOPS** | Matrix / Tensor Core MMA peak (FP8) @ 2.40 GHz |
-| **1D** FP32 / BF16 (CUDA core) | **≈22.1 TFLOPS** | Elementwise / epilogue roof @ 2.40 GHz |
-| **Phys. 2D dens.** (FP8) | **197.5 ops/B** | $88.5\,\mathrm{TFLOPS} / 448\,\mathrm{GB/s}$ |
-| **Phys. 1D dens.** (CUDA core) | **49.4 ops/B** | $22.1\,\mathrm{TFLOPS} / 448\,\mathrm{GB/s}$ |
+| **2D** BF16 (Tensor Core, dense) | **≈354 TFLOPS** | `1024 * 4 * 36 * 2.40e9` |
+| **2D** FP8 (Tensor Core, dense) | **≈708 TFLOPS** | `2048 * 4 * 36 * 2.40e9` |
+| **1D** FP32 (CUDA core) | **≈22.1 TFLOPS** | Epilogue / elementwise roof |
+| **Phys. 2D dens.** (FP8) | **≈1580 ops/B** | `708 TFLOPS / 448 GB/s` |
+| **Phys. 1D dens.** (CUDA) | **≈49.4 ops/B** | `22.1 TFLOPS / 448 GB/s` |
 
-(At the 2.57 GHz boost clock the same model would give ≈23.7 / 47.4 / 94.8 TFLOPS; those marketing-boost numbers are **not** used for utilization below.)
+Do **not** derive Tensor peaks from `k * Peak_FP32_1D`; TC throughput is independent of the CUDA-core FP32 roof.
 
 ---
 
@@ -114,7 +125,7 @@ Dense Tensor peaks follow the same scaling as before ($\mathrm{BF16}_{2\mathrm{D
 | C | `[10, 8192, 2048]` | FP8 | 167.77 MB |
 | bias | `[10, 2048]` | FP32 | 0.082 MB |
 
-**Launch geometry (nsys / CUPTI):** grid `(5120,1,1)`, block `(256,1,1)` (= 8 warps), 255 regs/thread, 48 KiB dynamic SMEM.  
+**Launch geometry (nsys / CUPTI):** grid `(5120,1,1)`, block `(256,1,1)` (= 8 warps), 255 regs/thread, 48 KiB dynamic SMEM.
 Grid check: $\lceil M/128\rceil\cdot\lceil N/256\rceil\cdot n\_slices = 64\cdot 8\cdot 10 = 5120$.
 
 ---
@@ -257,28 +268,31 @@ Duration is highly stable across repeated nsys captures.
 
 #### Roofline for the target kernel (nsys duration)
 
-Formulas (same as MLP-MoE report):
+Formulas:
 
-- **2D ops** $= 2 \cdot B \cdot M \cdot N \cdot K$
-- **Traffic** $= \mathrm{size}(A)+\mathrm{size}(B)+\mathrm{size}(C)$ (FP8; bias excluded from 2D traffic)
-- **Op 2D dens.** $= (2BMNK) / \mathrm{traffic}$
-- **Effective BW** $= \mathrm{traffic} / t$
-- **FLOPS util.** $= (2BMNK/t) / \mathrm{Peak}_{2\mathrm{D}}(\mathrm{FP8})$
+```text
+FLOPs_2D       = 2 * B * M * N * K
+Traffic        = size(A) + size(B) + size(C)    # FP8; bias excluded
+Op_2D_dens     = FLOPs_2D / Traffic
+Effective_BW   = Traffic / t
+FLOPS_util     = (FLOPs_2D / t) / Peak_FP8_2D
+Peak_FP8_2D    = 2048 * 4 * 36 * f_SM           # dense TC MAC model @ f_SM
+```
 
 | Quantity | Value |
 | -------- | ----- |
-| Kernel time $t$ (nsys) | **40.781553 ms** |
-| 2D FLOPs | $2\cdot10\cdot8192\cdot2048\cdot7680 = 2.577\times10^{12}$ |
-| Traffic $A{+}B{+}C$ | **954.204 MB** |
+| Kernel time `t` (nsys) | **40.781553 ms** |
+| 2D FLOPs | `2*10*8192*2048*7680 = 2.577e12` |
+| Traffic A+B+C | **954.204 MB** |
 | **Op 2D dens.** | **2700.7 ops/B** |
-| Phys. 2D dens. (FP8) @ 2.40 GHz | 197.5 ops/B |
-| **2D bound** | **Compute** (2700.7 ≫ 197.5) |
-| **1D dens.** (bias adds $B\cdot M\cdot N$) | **0.176 ops/B** (≪ 49.4 → epilogue BW-cheap vs GEMM) |
+| Phys. 2D dens. (FP8) @ 2.40 GHz | **≈1580 ops/B** (`708 TFLOPS / 448 GB/s`) |
+| **2D bound** | **Compute** (2700.7 ≫ 1580) |
+| **1D dens.** (bias adds `B*M*N`) | **0.176 ops/B** (≪ 49.4 → epilogue BW-cheap vs GEMM) |
 | Achieved 2D FP8 | **63.19 TFLOPS** |
-| **FLOPS utilization** | **71.4%** of **88.5 TFLOPS** (peak @ $f_{\mathrm{SM}}{=}2.40\,\mathrm{GHz}$) |
+| **FLOPS utilization** | **≈8.9%** of **708 TFLOPS** (`Peak_FP8_2D` @ `f_SM = 2.40 GHz`) |
 | Effective bandwidth | **23.4 GB/s** (**5.2%** of 448 GB/s) |
 
-**Reading:** arithmetic intensity is far above the FP8 knee, so the kernel is **compute-bound on paper**. Measured effective DRAM traffic rate is low (~5% of peak), consistent with a Tensor-Core–heavy GEMM that reuses tiles in SMEM/L1/L2. Achieved **~71%** of dense FP8 Tensor peak at the measured SM clock (vs ~67% if the 2.57 GHz / 94.8 TFLOPS boost roof were used).
+**Reading:** arithmetic intensity is still above the FP8 knee, so the kernel remains **compute-bound on paper**. DRAM is quiet (~5% of peak) from SMEM/L1/L2 reuse. Against the **Tensor-Core MAC peak** (~708 TFLOPS), achieved util is only **~8.9%** (was ~71% under the old, incorrect `4 * Peak_FP32` proxy). That aligns better with low occupancy (16.7%) and SM SOL ~37% / tensor-pipe headroom from NCU.
 
 ---
 
@@ -409,7 +423,7 @@ See `irs/MANIFEST.txt`. Env: `TRITON_PERF_IR_DUMP=…/irs TRITON_ALWAYS_COMPILE=
 ## 5. Summary
 
 - **Workload:** batched FP8×FP8 matmul $B{=}10$, $M{=}8192$, $N{=}2048$, $K{=}7680$, tile **128×256×128**, kernel `_matmul_NNN_fp8e5xfp8e5xfp8e5_128x256x128x1`.
-- **nsys:** single-launch GPU time **40.782 ms**; ~**71.4%** of dense **FP8 2D** peak at **2.40 GHz** (**63.2 / 88.5 TFLOPS**); op intensity **~2701 ops/B** → **compute-bound** vs FP8 knee **197.5**; effective DRAM BW only **~5%** of 448 GB/s (cache/SMEM reuse).
+- **nsys:** single-launch GPU time **40.782 ms**; ~**8.9%** of dense **FP8 2D** TC peak at **2.40 GHz** (**63.2 / 708 TFLOPS**, `2048*4*36*f`); op intensity **~2701 ops/B** → **compute-bound** vs FP8 knee **~1580**; effective DRAM BW only **~5%** of 448 GB/s (cache/SMEM reuse). Boost-clock cross-check: `2048*4*36*2.57e9 ≈ 759 TFLOPS` = NVIDIA **759 AI TOPS**.
 - **Repeatability:** nsys 10× CV **0.14%**; ncu 3× CV **0.033%**.
 - **ncu (stall sections):** DRAM ~**6.3%**, SM/Memory SOL ~**37.4%**, occupancy ~**16.7%**. Dominant warp stall **`math_pipe_throttle` (47.4%)**, then **`mio_throttle` (20.0%)**; `long_scoreboard` 4.8%, `barrier` 3.0%, `lg_throttle` 0.1%. Requires `--privileged` for counters; do **not** rely on `--set basic` alone for stall naming. For an intra-kernel Tensor/L1TEX timeline use **`--section PmSampling`** (see §4); this kernel uses `cp.async`/L1TEX, not TMA.
 - **Artifacts:** `test_matmul_nsys.*`, `test_matmul_ncu.*`, `irs/` under this profile dir; PM Sampling command prepared as `test_matmul_ncu_pmsampling.*` (run when collecting the timeline).
