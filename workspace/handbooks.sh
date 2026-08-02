@@ -7,7 +7,7 @@ cd /Volumes/case_sensitive_workspace/triton && PYTHONPATH=python/triton_kernels 
 TRITON_OPT=/Volumes/case_sensitive_workspace/triton/build/cmake.linux-x86_64-cpython-3.12/bin/triton-opt
 FileCheck=/Volumes/case_sensitive_workspace/triton/python/triton/FileCheck
 #SourceFile=/Volumes/case_sensitive_workspace/triton/test/TritonGPU/loop-pipeline.mlir # /Volumes/case_sensitive_workspace/triton/workspace/Matmul-None-False-False-False-False-None-128-8192-2048-7680-batched-float8_e5m2-float8_e5m2-None-10-1-False-False-False-None-False-False-False-True-None/irs/04b_before_ttgpuir_add_pipeline.ttgir____matmul_NNN_fp8e5xfp8e5xfp8e5_128x256x128x1
-SourceFile=/Volumes/case_sensitive_workspace/triton/workspace/Matmul-None-False-False-False-False-None-128-8192-2048-7680-batched-float8_e5m2-float8_e5m2-None-10-1-False-False-False-None-False-False-False-True-None/irs/04b_before_ttgpuir_add_pipeline.ttgir____matmul_NNN_fp8e5xfp8e5xfp8e5_128x256x128x1
+SourceFile=/Volumes/case_sensitive_workspace/triton/workspace/Matmul-None-False-False-False-False-None-128-8192-2048-7680-batched-float8_e5m2-float8_e5m2-None-10-1-False-False-False-None-False-False-False-True-None/irs/04a_before_ttgpuir_add_assign_latencies.ttgir____matmul_NNN_fp8e5xfp8e5xfp8e5_128x256x128x1
 
 "$TRITON_OPT" "$SourceFile" \
   -split-input-file \
@@ -15,6 +15,33 @@ SourceFile=/Volumes/case_sensitive_workspace/triton/workspace/Matmul-None-False-
   -tritongpu-schedule-loops \
   -tritongpu-pipeline=num-stages=2 \
   -canonicalize  >& log 2>&1 #| "$FileCheck" "$SourceFile" --check-prefixes=COMMON,CHECK
+
+## print the contiguity, disvisibility and constancy
+## triton-opt build and run
+TRITON_OPT=/Volumes/case_sensitive_workspace/triton/build/cmake.linux-x86_64-cpython-3.12/bin/triton-opt
+FileCheck=/Volumes/case_sensitive_workspace/triton/python/triton/FileCheck
+#SourceFile=/Volumes/case_sensitive_workspace/triton/test/TritonGPU/loop-pipeline.mlir # /Volumes/case_sensitive_workspace/triton/workspace/Matmul-None-False-False-False-False-None-128-8192-2048-7680-batched-float8_e5m2-float8_e5m2-None-10-1-False-False-False-None-False-False-False-True-None/irs/04b_before_ttgpuir_add_pipeline.ttgir____matmul_NNN_fp8e5xfp8e5xfp8e5_128x256x128x1
+SourceFile=/Volumes/case_sensitive_workspace/triton/workspace/Matmul-None-False-False-False-False-None-128-8192-2048-7680-batched-float8_e5m2-float8_e5m2-None-10-1-False-False-False-None-False-False-False-True-None/irs/04a_before_ttgpuir_add_assign_latencies.ttgir____matmul_NNN_fp8e5xfp8e5xfp8e5_128x256x128x1
+
+"$TRITON_OPT" "$SourceFile" --test-print-alignment >& mem.log 2>&1
+
+## turn on pass's debug log
+## print the contiguity, disvisibility and constancy
+## triton-opt build and run
+TRITON_OPT=/Volumes/case_sensitive_workspace/triton/build/cmake.linux-x86_64-cpython-3.12/bin/triton-opt
+FileCheck=/Volumes/case_sensitive_workspace/triton/python/triton/FileCheck
+#SourceFile=/Volumes/case_sensitive_workspace/triton/test/TritonGPU/loop-pipeline.mlir # /Volumes/case_sensitive_workspace/triton/workspace/Matmul-None-False-False-False-False-None-128-8192-2048-7680-batched-float8_e5m2-float8_e5m2-None-10-1-False-False-False-None-False-False-False-True-None/irs/04b_before_ttgpuir_add_pipeline.ttgir____matmul_NNN_fp8e5xfp8e5xfp8e5_128x256x128x1
+SourceFile=/Volumes/case_sensitive_workspace/triton/workspace/Matmul-None-False-False-False-False-None-128-8192-2048-7680-batched-float8_e5m2-float8_e5m2-None-10-1-False-False-False-None-False-False-False-True-None/irs/04a_before_ttgpuir_add_assign_latencies.ttgir____matmul_NNN_fp8e5xfp8e5xfp8e5_128x256x128x1
+
+"$TRITON_OPT" "$SourceFile" \
+  -split-input-file \
+  --debug-only=triton-loop-pipeline \
+  -tritongpu-assign-latencies=num-stages=2 \
+  -tritongpu-schedule-loops \
+  -tritongpu-pipeline=num-stages=2 \
+  -canonicalize  >& log 2>&1 #| "$FileCheck" "$SourceFile" --check-prefixes=COMMON,CHECK
+
+
 
 ## run test_matmul.py with nsys profile
 cd /Volumes/case_sensitive_workspace/triton
