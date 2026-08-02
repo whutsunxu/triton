@@ -1,0 +1,5 @@
+Target: _matmul_NNN_fp8e5xfp8e5xfp8e5_128x256x128x1
+Baseline experiment_report.md: 40.781553 ms (40781553 ns)
+Rerun nsys:                    40.538372 ms (40538372 ns)
+Delta: -0.243181 ms (-0.60%)
+Verdict: SIMILAR (|delta| < 5%)
