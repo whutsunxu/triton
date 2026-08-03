@@ -1,0 +1,5 @@
+# Portable: use compile_commands.json next to this file (repo root).
+# Create/update it after cmake configure, e.g.:
+#   ln -sfn build/cmake.*/compile_commands.json compile_commands.json
+CompileFlags:
+  CompilationDatabase: .
