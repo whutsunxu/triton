@@ -16,6 +16,28 @@ import subprocess
 from pathlib import Path
 
 
+def _perf_ir_dump(mod_or_str, tag: str, ext: str):
+    """Optional key-pass IR dump when TRITON_PERF_IR_DUMP=<dir> is set."""
+    dump_dir = os.environ.get("TRITON_PERF_IR_DUMP")
+    if not dump_dir:
+        return
+    os.makedirs(dump_dir, exist_ok=True)
+    text = mod_or_str if isinstance(mod_or_str, str) else str(mod_or_str)
+    kn = None
+    for pat in (r"tt\.func\s+public\s+@([A-Za-z0-9_]+)", r"define\s+[^{]*@([A-Za-z0-9_]+)\(",
+                r"\.visible\s+\.entry\s+([A-Za-z0-9_]+)"):
+        m = re.search(pat, text)
+        if m:
+            kn = m.group(1)
+            break
+    if kn is None:
+        kn = "kernel"
+    # Match existing experiment dump naming: <tag>.<ext>___<name without leading _>
+    path = os.path.join(dump_dir, f"{tag}.{ext}___{kn.lstrip('_')}")
+    with open(path, "w") as f:
+        f.write(text)
+
+
 def min_dot_size(target: GPUTarget):
 
     def check_dot_compatibility(lhs_type, rhs_type) -> Tuple[int, int, int]:  # [m, n, k]
@@ -283,6 +305,7 @@ class CUDABackend(BaseBackend):
         passes.common.add_symbol_dce(pm)
         passes.ttir.add_loop_unroll(pm)
         pm.run(mod, 'make_ttir')
+        _perf_ir_dump(mod, "01_after_ttir_add_loop_unroll", "ttir")
         return mod
 
     @staticmethod
@@ -327,15 +350,30 @@ class CUDABackend(BaseBackend):
             passes.ttgpuir.add_optimize_accumulator_init(pm)
             passes.ttgpuir.add_hoist_tmem_alloc(pm, False)
             nvidia.passes.ttnvgpuir.add_promote_lhs_to_tmem(pm)
+            pm.run(mod, 'make_ttgir.pre_pipeline')
+            _perf_ir_dump(mod, "04a_before_ttgpuir_add_assign_latencies", "ttgir")
+
+            pm = ir.pass_manager(mod.context)
+            dump_enabled = pm.enable_debug()
             passes.ttgpuir.add_assign_latencies(pm, opt.num_stages)
             passes.ttgpuir.add_schedule_loops(pm)
             passes.ttgpuir.add_warp_specialize(pm, opt.num_stages)
+            pm.run(mod, 'make_ttgir.schedule_ws')
+            _perf_ir_dump(mod, "04b_before_ttgpuir_add_pipeline", "ttgir")
+
+            pm = ir.pass_manager(mod.context)
+            dump_enabled = pm.enable_debug()
             passes.ttgpuir.add_pipeline(pm, opt.num_stages, dump_enabled)
             passes.ttgpuir.add_optimize_partition_warps(pm)
             passes.ttgpuir.add_combine_tensor_select_and_if(pm)
             # hoist again and allow hoisting out of if statements
             passes.ttgpuir.add_hoist_tmem_alloc(pm, True)
             nvidia.passes.ttnvgpuir.add_remove_tmem_tokens(pm)
+            pm.run(mod, 'make_ttgir.post_pipeline')
+            _perf_ir_dump(mod, "05_after_ttgpuir_add_pipeline", "ttgir")
+
+            pm = ir.pass_manager(mod.context)
+            dump_enabled = pm.enable_debug()
         else:
             passes.ttir.add_triton_licm(pm)
         passes.common.add_canonicalizer(pm)
@@ -369,6 +407,7 @@ class CUDABackend(BaseBackend):
             passes.common.add_cse(pm)
 
         pm.run(mod, 'make_ttgir')
+        _perf_ir_dump(mod, "02_after_ttnvgpuir_add_lower_mma", "ttgir")
         metadata["tensordesc_meta"] = mod.get_tensordesc_metadata()
         return mod
 
@@ -513,6 +552,7 @@ class CUDABackend(BaseBackend):
         if knobs.compilation.dump_ir:
             llvm.add_version_info(llvm_mod)
         ret = str(llvm_mod)
+        _perf_ir_dump(ret, "03_after_llvm_optimize_module_O3", "llir")
         del llvm_mod
         del context
         return ret
@@ -548,6 +588,7 @@ class CUDABackend(BaseBackend):
         if knobs.nvidia.dump_nvptx:
             print("// -----// NVPTX Dump //----- //")
             print(ret)
+        _perf_ir_dump(ret, "04_after_llvm_translate_to_asm", "ptx")
         return ret
 
     def make_cubin(self, src, metadata, opt, capability):

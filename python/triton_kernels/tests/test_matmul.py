@@ -278,7 +278,7 @@ def _build_test_op_cases():
     (False, False, None)
 ])
 @pytest.mark.parametrize("do_gamma", [False])
-@pytest.mark.parametrize("is_persistent", [False])
+@pytest.mark.parametrize("is_persistent", [True])
 @pytest.mark.parametrize("num_warps", [4, 8] if is_hopper() else [None])
 @pytest.mark.enable_warmup(priority=2)
 def test_op(m, n, k, split_k, do_gather, do_scatter, inner_expt_opt, do_gamma, is_persistent, num_warps, n_slices,

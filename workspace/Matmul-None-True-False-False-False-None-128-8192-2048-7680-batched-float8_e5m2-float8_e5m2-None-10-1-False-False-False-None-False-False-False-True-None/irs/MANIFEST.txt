@@ -1,0 +1,30 @@
+IR dumps for test_matmul.py::test_op (is_persistent=True)
+kernel: _p_matmul_NNN_fp8e5xfp8e5xfp8e5_128x256x128x1
+source: third_party/nvidia/backend/compiler.py (_perf_ir_dump / TRITON_PERF_IR_DUMP)
+
+01_after_ttir_add_loop_unroll.ttir
+  after: passes.ttir.add_loop_unroll(pm)  [end of make_ttir]
+
+04a_before_ttgpuir_add_assign_latencies.ttgir
+  before: passes.ttgpuir.add_assign_latencies(pm)
+
+04b_before_ttgpuir_add_pipeline.ttgir
+  after: assign_latencies + schedule_loops + warp_specialize
+  before: add_pipeline
+
+05_after_ttgpuir_add_pipeline.ttgir
+  after: add_pipeline (+ partition warps / tmem cleanup)
+
+02_after_ttnvgpuir_add_lower_mma.ttgir
+  after: nvidia.passes.ttnvgpuir.add_lower_mma(pm)
+
+03_after_llvm_optimize_module_O3.llir
+  after: llvm.optimize_module(llvm_mod, llvm.OPTIMIZE_O3)
+
+04_after_llvm_translate_to_asm.ptx
+  after: llvm.translate_to_asm(...)
+
+mem_feature.log
+  triton-opt 04a --test-print-alignment
+
+Env to reproduce: TRITON_PERF_IR_DUMP=<dir> TRITON_ALWAYS_COMPILE=1
