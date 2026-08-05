@@ -350,30 +350,15 @@ class CUDABackend(BaseBackend):
             passes.ttgpuir.add_optimize_accumulator_init(pm)
             passes.ttgpuir.add_hoist_tmem_alloc(pm, False)
             nvidia.passes.ttnvgpuir.add_promote_lhs_to_tmem(pm)
-            pm.run(mod, 'make_ttgir.pre_pipeline')
-            _perf_ir_dump(mod, "04a_before_ttgpuir_add_assign_latencies", "ttgir")
-
-            pm = ir.pass_manager(mod.context)
-            dump_enabled = pm.enable_debug()
             passes.ttgpuir.add_assign_latencies(pm, opt.num_stages)
             passes.ttgpuir.add_schedule_loops(pm)
             passes.ttgpuir.add_warp_specialize(pm, opt.num_stages)
-            pm.run(mod, 'make_ttgir.schedule_ws')
-            _perf_ir_dump(mod, "04b_before_ttgpuir_add_pipeline", "ttgir")
-
-            pm = ir.pass_manager(mod.context)
-            dump_enabled = pm.enable_debug()
             passes.ttgpuir.add_pipeline(pm, opt.num_stages, dump_enabled)
             passes.ttgpuir.add_optimize_partition_warps(pm)
             passes.ttgpuir.add_combine_tensor_select_and_if(pm)
             # hoist again and allow hoisting out of if statements
             passes.ttgpuir.add_hoist_tmem_alloc(pm, True)
             nvidia.passes.ttnvgpuir.add_remove_tmem_tokens(pm)
-            pm.run(mod, 'make_ttgir.post_pipeline')
-            _perf_ir_dump(mod, "05_after_ttgpuir_add_pipeline", "ttgir")
-
-            pm = ir.pass_manager(mod.context)
-            dump_enabled = pm.enable_debug()
         else:
             passes.ttir.add_triton_licm(pm)
         passes.common.add_canonicalizer(pm)
