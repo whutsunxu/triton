@@ -1,0 +1,111 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.3, pytest-9.1.1, pluggy-1.6.0 -- /Volumes/case_sensitive_workspace/venv/bin/python
+cachedir: .pytest_cache
+rootdir: /Volumes/case_sensitive_workspace/triton
+configfile: pytest.ini
+plugins: anyio-4.13.0, xdist-3.8.0, instafail-0.5.0, forked-1.6.0
+collecting ... collected 1 item
+
+python/triton_kernels/tests/test_matmul.py::test_op[None-False-False-False-False-None-128-8192-2048-7680-batched-float8_e5m2-float8_e5m2-None-10-1-False-False-False-None-False-False-False-True-None] PASSED [100%]
+
+============================== 1 passed in 2.40s ===============================
+Collecting data...
+Generating '/tmp/nsys-report-c35a.qdstrm'
+[1/8] [0%                          ] test_matmul_nsys.nsys-rep[1/8] [0%                          ] test_matmul_nsys.nsys-rep[1/8] [0%                          ] test_matmul_nsys.nsys-rep[1/8] [==21%                       ] test_matmul_nsys.nsys-rep[1/8] [========42%                 ] test_matmul_nsys.nsys-rep[1/8] [===========50%              ] test_matmul_nsys.nsys-rep[1/8] [========================100%] test_matmul_nsys.nsys-rep[1/8] [========================100%] test_matmul_nsys.nsys-rep
+[2/8] [0%                          ] test_matmul_nsys.sqlite[2KProcessing 39926 events: 
+[2/8] [1%                          ] test_matmul_nsys.sqlite[2/8] [2%                          ] test_matmul_nsys.sqlite[2/8] [3%                          ] test_matmul_nsys.sqlite[2/8] [4%                          ] test_matmul_nsys.sqlite[2/8] [5%                          ] test_matmul_nsys.sqlite[2/8] [6%                          ] test_matmul_nsys.sqlite[2/8] [7%                          ] test_matmul_nsys.sqlite[2/8] [8%                          ] test_matmul_nsys.sqlite[2/8] [9%                          ] test_matmul_nsys.sqlite[2/8] [10%                         ] test_matmul_nsys.sqlite[2/8] [11%                         ] test_matmul_nsys.sqlite[2/8] [12%                         ] test_matmul_nsys.sqlite[2/8] [13%                         ] test_matmul_nsys.sqlite[2/8] [14%                         ] test_matmul_nsys.sqlite[2/8] [=15%                        ] test_matmul_nsys.sqlite[2/8] [=16%                        ] test_matmul_nsys.sqlite[2/8] [=17%                        ] test_matmul_nsys.sqlite[2/8] [==18%                       ] test_matmul_nsys.sqlite[2/8] [==19%                       ] test_matmul_nsys.sqlite[2/8] [==20%                       ] test_matmul_nsys.sqlite[2/8] [==21%                       ] test_matmul_nsys.sqlite[2/8] [===22%                      ] test_matmul_nsys.sqlite[2/8] [===23%                      ] test_matmul_nsys.sqlite[2/8] [===24%                      ] test_matmul_nsys.sqlite[2/8] [====25%                     ] test_matmul_nsys.sqlite[2/8] [====26%                     ] test_matmul_nsys.sqlite[2/8] [====27%                     ] test_matmul_nsys.sqlite[2/8] [====28%                     ] test_matmul_nsys.sqlite[2/8] [=====29%                    ] test_matmul_nsys.sqlite[2/8] [=====30%                    ] test_matmul_nsys.sqlite[2/8] [=====31%                    ] test_matmul_nsys.sqlite[2/8] [=====32%                    ] test_matmul_nsys.sqlite[2/8] [======33%                   ] test_matmul_nsys.sqlite[2/8] [======34%                   ] test_matmul_nsys.sqlite[2/8] [======35%                   ] test_matmul_nsys.sqlite[2/8] [=======36%                  ] test_matmul_nsys.sqlite[2/8] [=======37%                  ] test_matmul_nsys.sqlite[2/8] [=======38%                  ] test_matmul_nsys.sqlite[2/8] [=======39%                  ] test_matmul_nsys.sqlite[2/8] [========40%                 ] test_matmul_nsys.sqlite[2/8] [========41%                 ] test_matmul_nsys.sqlite[2/8] [========42%                 ] test_matmul_nsys.sqlite[2/8] [=========43%                ] test_matmul_nsys.sqlite[2/8] [=========44%                ] test_matmul_nsys.sqlite[2/8] [=========45%                ] test_matmul_nsys.sqlite[2/8] [=========46%                ] test_matmul_nsys.sqlite[2/8] [==========47%               ] test_matmul_nsys.sqlite[2/8] [==========48%               ] test_matmul_nsys.sqlite[2/8] [==========49%               ] test_matmul_nsys.sqlite[2/8] [===========50%              ] test_matmul_nsys.sqlite[2/8] [===========51%              ] test_matmul_nsys.sqlite[2/8] [===========52%              ] test_matmul_nsys.sqlite[2/8] [===========53%              ] test_matmul_nsys.sqlite[2/8] [============54%             ] test_matmul_nsys.sqlite[2/8] [============55%             ] test_matmul_nsys.sqlite[2/8] [============56%             ] test_matmul_nsys.sqlite[2/8] [============57%             ] test_matmul_nsys.sqlite[2/8] [=============58%            ] test_matmul_nsys.sqlite[2/8] [=============59%            ] test_matmul_nsys.sqlite[2/8] [=============60%            ] test_matmul_nsys.sqlite[2/8] [==============61%           ] test_matmul_nsys.sqlite[2/8] [==============62%           ] test_matmul_nsys.sqlite[2/8] [==============63%           ] test_matmul_nsys.sqlite[2/8] [==============64%           ] test_matmul_nsys.sqlite[2/8] [===============65%          ] test_matmul_nsys.sqlite[2/8] [===============66%          ] test_matmul_nsys.sqlite[2/8] [===============67%          ] test_matmul_nsys.sqlite[2/8] [================68%         ] test_matmul_nsys.sqlite[2/8] [================69%         ] test_matmul_nsys.sqlite[2/8] [================70%         ] test_matmul_nsys.sqlite[2/8] [================71%         ] test_matmul_nsys.sqlite[2/8] [=================72%        ] test_matmul_nsys.sqlite[2/8] [=================73%        ] test_matmul_nsys.sqlite[2/8] [=================74%        ] test_matmul_nsys.sqlite[2/8] [==================75%       ] test_matmul_nsys.sqlite[2/8] [==================76%       ] test_matmul_nsys.sqlite[2/8] [==================77%       ] test_matmul_nsys.sqlite[2/8] [==================78%       ] test_matmul_nsys.sqlite[2/8] [===================79%      ] test_matmul_nsys.sqlite[2/8] [===================80%      ] test_matmul_nsys.sqlite[2/8] [===================81%      ] test_matmul_nsys.sqlite[2/8] [===================82%      ] test_matmul_nsys.sqlite[2/8] [====================83%     ] test_matmul_nsys.sqlite[2/8] [====================84%     ] test_matmul_nsys.sqlite[2/8] [====================85%     ] test_matmul_nsys.sqlite[2/8] [=====================86%    ] test_matmul_nsys.sqlite[2/8] [=====================87%    ] test_matmul_nsys.sqlite[2/8] [=====================88%    ] test_matmul_nsys.sqlite[2/8] [=====================89%    ] test_matmul_nsys.sqlite[2/8] [======================90%   ] test_matmul_nsys.sqlite[2/8] [======================91%   ] test_matmul_nsys.sqlite[2/8] [======================92%   ] test_matmul_nsys.sqlite[2/8] [=======================93%  ] test_matmul_nsys.sqlite[2/8] [=======================94%  ] test_matmul_nsys.sqlite[2/8] [=======================95%  ] test_matmul_nsys.sqlite[2/8] [=======================96%  ] test_matmul_nsys.sqlite[2/8] [========================97% ] test_matmul_nsys.sqlite[2/8] [========================98% ] test_matmul_nsys.sqlite[2/8] [========================99% ] test_matmul_nsys.sqlite[2/8] [========================100%] test_matmul_nsys.sqlite[2/8] [========================100%] test_matmul_nsys.sqlite
+SKIPPED: /Volumes/case_sensitive_workspace/triton/workspace/rerun_nsys_20260805_095409/test_matmul_nsys.sqlite does not contain NV Tools Extension (NVTX) data.
+[3/8] Executing 'nvtx_sum' stats report
+[4/8] Executing 'osrt_sum' stats report
+
+ Time (%)  Total Time (ns)  Num Calls   Avg (ns)     Med (ns)    Min (ns)   Max (ns)   StdDev (ns)           Name         
+ --------  ---------------  ---------  -----------  -----------  ---------  ---------  -----------  ----------------------
+     76.1       2930014168        124   23629146.5   10060096.0       1700  282395618   38145635.8  poll                  
+     13.0        500061014          1  500061014.0  500061014.0  500061014  500061014          0.0  pthread_cond_timedwait
+      3.8        144942912       3958      36620.2       2180.0       1000   22747269     679254.8  read                  
+      3.0        115889460        497     233178.0      17240.0       1050   10412679     744667.6  ioctl                 
+      1.1         42295268       8189       5164.9       5190.0       1080      91340       1955.0  stat64                
+      1.0         37181423      10302       3609.1       3580.0       1580      10430        849.8  lstat64               
+      0.5         21119550       4503       4690.1       3080.0       2550    3071985      45837.3  munmap                
+      0.4         16014555       2203       7269.4       7500.0       1690     133830       4052.2  open64                
+      0.4         14335640       4592       3121.9       2180.0       1570    2079950      31214.4  mmap64                
+      0.2          8371480       3242       2582.2       2540.0       1010      89669       1619.4  fstat64               
+      0.2          7701669       1700       4530.4       2740.0       1090    2862046      69350.3  close                 
+      0.1          5568743          1    5568743.0    5568743.0    5568743    5568743          0.0  dup                   
+      0.0          1421993         25      56879.7      57260.0      37279      61080       4524.0  sleep                 
+      0.0          1377334         11     125212.2      43190.0      18000     567427     197713.3  sem_timedwait         
+      0.0           747257         44      16983.1      24415.0       1070      95590      17301.2  fgets                 
+      0.0           259100         42       6169.0       4450.0       1770      32330       5402.4  fopen                 
+      0.0           256849         17      15108.8       5700.0       2130     134019      31257.5  mmap                  
+      0.0           235487          4      58871.8      57074.0      42379      78960      15460.1  pthread_create        
+      0.0            98559          8      12319.9      10580.0       1490      24979       8063.5  close_range           
+      0.0            90859         16       5678.7       5010.0       3220      10810       2465.9  pipe2                 
+      0.0            75480         37       2040.0       1740.0       1300       4460        810.3  fclose                
+      0.0            70710         18       3928.3       2885.0       1510      11940       2711.4  write                 
+      0.0            63190          9       7021.1       5920.0       3020      13380       3334.4  open                  
+      0.0            61790          6      10298.3      11360.0       3530      13920       3702.8  waitpid               
+      0.0            55570          1      55570.0      55570.0      55570      55570          0.0  pthread_cond_wait     
+      0.0            52860          5      10572.0       5320.0       1070      33940      13279.0  pthread_cond_signal   
+      0.0            34620          4       8655.0       4320.0       4040      21940       8857.7  stat                  
+      0.0            31470          5       6294.0       3130.0       2230      14050       5309.0  fopen64               
+      0.0            20590         12       1715.8       1465.0       1080       2960        688.4  dup2                  
+      0.0            18870          2       9435.0       9435.0       8320      10550       1576.8  fread                 
+      0.0            16280          2       8140.0       8140.0       4460      11820       5204.3  socket                
+      0.0            11790          1      11790.0      11790.0      11790      11790          0.0  connect               
+      0.0             9940          7       1420.0       1310.0       1080       2100        381.4  sigaction             
+      0.0             5750          2       2875.0       2875.0       2310       3440        799.0  fwrite                
+      0.0             4300          4       1075.0       1045.0       1020       1190         78.5  fcntl                 
+      0.0             2310          1       2310.0       2310.0       2310       2310          0.0  bind                  
+      0.0             1710          1       1710.0       1710.0       1710       1710          0.0  pthread_cond_broadcast
+      0.0             1680          1       1680.0       1680.0       1680       1680          0.0  fstat                 
+      0.0             1260          1       1260.0       1260.0       1260       1260          0.0  listen                
+      0.0             1010          1       1010.0       1010.0       1010       1010          0.0  fcntl64               
+
+[5/8] Executing 'cuda_api_sum' stats report
+
+ Time (%)  Total Time (ns)  Num Calls   Avg (ns)   Med (ns)   Min (ns)  Max (ns)  StdDev (ns)               Name              
+ --------  ---------------  ---------  ----------  ---------  --------  --------  -----------  -------------------------------
+     60.0         69356241          6  11559373.5  7637062.5   1224794  38027004   13398464.5  cuLibraryLoadData              
+     39.2         45251927         11   4113811.5  2336668.0      6080  16785537    5473458.4  cudaLaunchKernel               
+      0.6           678367          3    226122.3   240419.0    186839    251109      34437.7  cudaMalloc                     
+      0.1            93910          1     93910.0    93910.0     93910     93910          0.0  cuModuleLoadData               
+      0.0            45750          5      9150.0     5130.0      3870     18680       6689.0  cudaMemcpyAsync                
+      0.0            20840          1     20840.0    20840.0     20840     20840          0.0  cuLaunchKernelEx               
+      0.0            16970          7      2424.3     1420.0       490      6900       2391.1  cudaStreamIsCapturing_v10000   
+      0.0            14920          4      3730.0     3390.0      3210      4930        804.5  cudaStreamSynchronize          
+      0.0             9640          6      1606.7      810.0       650      5710       2012.4  cuLibraryGetKernel             
+      0.0             7410          6      1235.0      685.0       330      3780       1341.8  cudaStreamGetCaptureInfo_v12030
+      0.0             5160         11       469.1      440.0       230       750        174.2  cuKernelGetName                
+      0.0             2490          1      2490.0     2490.0      2490      2490          0.0  cuModuleGetLoadingMode         
+      0.0             2480          1      2480.0     2480.0      2480      2480          0.0  cuInit                         
+      0.0              750          2       375.0      375.0       330       420         63.6  cudaGetDeviceProperties_v12000 
+
+[6/8] Executing 'cuda_gpu_kern_sum' stats report
+
+ Time (%)  Total Time (ns)  Instances   Avg (ns)    Med (ns)   Min (ns)  Max (ns)  StdDev (ns)                                                  Name                                                
+ --------  ---------------  ---------  ----------  ----------  --------  --------  -----------  ----------------------------------------------------------------------------------------------------
+     54.8         41048802          1  41048802.0  41048802.0  41048802  41048802          0.0  _matmul_NNN_fp8e5xfp8e5xfp8e5_128x256x128x1                                                         
+     19.1         14309558          2   7154779.0   7154779.0   2873918  11435640    6054051.7  void at::native::elementwise_kernel<(int)128, (int)4, void at::native::gpu_kernel_impl<at::native::…
+     10.8          8101946          2   4050973.0   4050973.0   1600543   6501403    3465431.3  void at::native::vectorized_elementwise_kernel<(int)4, at::native::neg_kernel_cuda(at::TensorIterat…
+      7.8          5866780          2   2933390.0   2933390.0   1158527   4708253    2510035.3  void at::native::vectorized_elementwise_kernel<(int)4, at::native::float8_copy_kernel_cuda(at::Tens…
+      7.4          5512860          2   2756430.0   2756430.0   1109055   4403805    2329740.1  void at::native::<unnamed>::distribution_elementwise_grid_stride_kernel<unsigned int, (int)4, void …
+      0.0             2688          2      1344.0      1344.0      1088      1600        362.0  void at::native::vectorized_elementwise_kernel<(int)2, at::native::FillFunctor<long>, std::array<ch…
+      0.0             1696          1      1696.0      1696.0      1696      1696          0.0  void at::native::<unnamed>::distribution_elementwise_grid_stride_kernel<float, (int)4, void at::nat…
+
+[7/8] Executing 'cuda_gpu_mem_time_sum' stats report
+
+ Time (%)  Total Time (ns)  Count  Avg (ns)  Med (ns)  Min (ns)  Max (ns)  StdDev (ns)            Operation           
+ --------  ---------------  -----  --------  --------  --------  --------  -----------  ------------------------------
+     55.7             1248      1    1248.0    1248.0      1248      1248          0.0  [CUDA memcpy Device-to-Device]
+     44.3              992      4     248.0     256.0       224       256         16.0  [CUDA memcpy Host-to-Device]  
+
+[8/8] Executing 'cuda_gpu_mem_size_sum' stats report
+
+ Total (MB)  Count  Avg (MB)  Med (MB)  Min (MB)  Max (MB)  StdDev (MB)            Operation           
+ ----------  -----  --------  --------  --------  --------  -----------  ------------------------------
+      0.000      4     0.000     0.000     0.000     0.000        0.000  [CUDA memcpy Host-to-Device]  
+      0.000      1     0.000     0.000     0.000     0.000        0.000  [CUDA memcpy Device-to-Device]
+
+Generated:
+	/Volumes/case_sensitive_workspace/triton/workspace/rerun_nsys_20260805_095409/test_matmul_nsys.nsys-rep
+	/Volumes/case_sensitive_workspace/triton/workspace/rerun_nsys_20260805_095409/test_matmul_nsys.sqlite
