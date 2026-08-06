@@ -59,6 +59,8 @@ Assume `num_stages = 3` → stage budget `numStages - 1 = 2`.
 %47 = tt.dot %45, %46, %arg51
 ```
 
+**Table: Example A — load latency key variables**
+
 | key variable | value |
 |--------------|-------|
 | `loadOpToIndLevel` | `%43→(0,dot)`, `%44→(0,dot)` |
@@ -77,6 +79,8 @@ One load hop uses the **full** stage budget (gap of 2).
 %47 = tt.dot %45, %46, %arg51
 ```
 
+**Table: Example B — load latency key variables (parent load)**
+
 | key variable | value |
 |--------------|-------|
 | `loadOpToIndLevel` | `%43→(0,dot)`, `%L1→(1,%43)` |
@@ -87,6 +91,8 @@ One load hop uses the **full** stage budget (gap of 2).
 Budget split across **two** load hops; both loads still get the same `opLatency`.
 
 #### 1.2.3 Comparison
+
+**Table: Example A vs B — loadLatency comparison**
 
 | | maxIndLevel | `loadLatency` | intuition |
 |--|-------------|---------------|-----------|
@@ -106,6 +112,8 @@ In the flattened `scf.for`, A/B `descriptor_load`s are **direct** (indices from 
 ```
 
 So this is **example A** (§1.2.1):
+
+**Table: This IR — `opLatency` entries**
 
 | op | SSA | in `opLatency`? | value |
 |----|-----|-----------------|-------|
@@ -179,6 +187,8 @@ computeDistance(%43)                         # load, lat=2
 Call order (into recursion): `%43 → %45 → %47 → %50`, then `%51`.
 Write order (memoize on return): `%50`, `%51`, `%47`, `%45`, `%43`.
 
+**Table: A chain — `distance` from `%43`**
+
 | op | SSA | lat | users (in-block) | `distance` |
 |----|-----|-----|------------------|------------|
 | `arith.select` | `%50` | 0 | only `scf.yield` → none | **0** |
@@ -188,6 +198,8 @@ Write order (memoize on return): `%50`, `%51`, `%47`, `%45`, `%43`.
 | `tt.descriptor_load` | `%43` | 2 | `%45` | **2** |
 
 #### 2.2.2 B chain (`%44`)
+
+**Table: B chain — `distance` from `%44`**
 
 | op | SSA | lat | users (in-block) | `distance` |
 |----|-----|-----|------------------|------------|
@@ -223,6 +235,8 @@ maxDistance = 2
 
 Same op set as `distance`. In code, `opToStage` is a `MapVector` filled by `for (op, dist : distance)`, so its insertion order follows whatever order `DenseMap` yields — **not** a chosen semantic order.
 Here we list ops in the **same memoize order as §2.2.3** so the two tables match.
+
+**Table: This IR — `opToStage` from `distance`**
 
 | op | SSA | distance | `opToStage` |
 |----|-----|----------|-------------|
@@ -276,6 +290,8 @@ cluster_for_stage(s) = clusters[maxStage - s]
 
 With `maxStage = 2`:
 
+**Table: Stage → cluster id mapping (`maxStage = 2`)**
+
 | stage | `maxStage - stage` | cluster id |
 |-------|--------------------|------------|
 | 2 | 0 | **0** |
@@ -303,6 +319,8 @@ clusters[2] = newAtBack()  → id 2   # for stage 0
 
 `schedule.insert(op, stage, clusters[maxStage - stage])`
 
+**Table: Initial `schedule.insert` (before epilogue move)**
+
 | op | SSA | stage | cluster |
 |----|-----|-------|---------|
 | `%50` select | `%50` | 2 | **0** |
@@ -321,6 +339,8 @@ clusters[2] = newAtBack()  → id 2   # for stage 0
 
 #### 3.2.4 Final `schedule` from `scheduleKeyOps`
 
+**Table: Final `schedule` after `scheduleKeyOps`**
+
 | op | SSA | stage | cluster |
 |----|-----|-------|---------|
 | `%50` select | `%50` | 2 | **0** |
@@ -337,13 +357,134 @@ cluster list order: 0 → 1 → 2 → 3   # id 1 unused
 
 ---
 
-## 4. Note vs `schedule_loops_debug.log`
+## 4. `schedulePrologueAndEpilogue` (after `scheduleKeyOps`)
 
-The `.log` is **after the full schedule pass** (deps, prologue/epilogue, cluster splits). Example final attrs:
+Code: `ScheduleLoops.cpp` — push `scf.if`s to loop boundaries. Starts from the §3.2.4 schedule.
+
+### 4.1 Setup
+
+```text
+numStages = schedule.getNumStages() = 3   # stages 0..2
+afterPrologue = schedule.clusters.begin() # cluster id 0 (convert/dot bucket)
+                                              # captured BEFORE newAtFront
+```
+
+`afterPrologue` keeps pointing at the **old** front node even if a prologue cluster is prepended later (that node becomes “right after prologue”).
+
+### 4.2 Build `ifsToStage` (prologue candidates)
+
+For `stage = 0 .. numStages-1`, for each scheduled op with that stage:
+
+1. `getBackwardSlice(op)` — transitive defs of operands  
+   (`omitBlockArguments=true`, root not included)
+2. Any `scf.IfOp` in that slice → `ifsToStage.insert({ifOp, stage})`
+
+**`DenseMap::insert` does not overwrite.** Outer loop visits **increasing** stages, so the **lowest** stage that discovers an `if` wins — independent of load-vs-convert order inside `getOpsInOrder`.
+
+#### This IR
+
+**Table: Backward-slice discovery for `ifsToStage`**
+
+| Scheduled op | stage | `scf.if` in backward slice? |
+|--------------|-------|-----------------------------|
+| `%43`/`%44` loads | 0 | **`%41`** (tile-index if) |
+| `%45`/`%46`/`%47`/`%50` | 2 | **`%41`** again (through the loads) |
+| `%51` epilogue if | 2 | — (not a *producer* of these ops) |
+
+```text
+# after stage 0 (loads):
+ifsToStage = { %41 → 0 }
+
+# stage 2 also sees %41 → insert ignored → still stage 0
+ifsToStage = { %41 → 0 }   # final
+```
+
+`%51` stays **out** of `ifsToStage` (epilogue path below).
+
+### 4.3 Prologue cluster + schedule insert
+
+```cpp
+prologueCluster = schedule.clusters.newAtFront();
+// push_front(-1); then ++ all ids → new front id = 0
+schedule.insertIfAbsent(%41, stage=0, prologueCluster);
+```
+
+Cluster list after `newAtFront` (old ids shifted +1):
+
+```text
+before:  0 → 1 → 2 → 3
+after:   0' → 1 → 2 → 3 → 4
+         ↑ new prologue (%41)
+         (old 0/1/2/3 became 1/2/3/4)
+```
+
+**Table: `schedule` after prologue `newAtFront` / insert**
+
+| op | stage | cluster (after prologue insert) |
+|----|-------|----------------------------------|
+| **`%41` tile if** | **0** | **0** (new front) ← **added** |
+| `%50`/`%47`/`%45`/`%46` | 2 | 1 (was 0) |
+| `%43`/`%44` loads | 0 | 3 (was 2) |
+| `%51` epilogue if | 2 | 4 (was 3) |
+| *(unused)* | — | 2 (was 1) |
+
+`insertIfAbsent`: `%41` was not in the schedule yet → inserted.  
+`afterPrologue` still refers to the **old** begin node → now cluster id **1** (convert/dot).
+
+### 4.4 Other `IfOp`s → epilogue cluster
+
+```cpp
+epilogueCluster = schedule.clusters.newAtBack();  // new id 5
+// for each scf.if in the body not in ifsToStage:
+schedule.insertIfAbsent(ifOp, numStages-1, epilogueCluster);
+```
+
+- `%41` ∈ `ifsToStage` → skipped  
+- `%51` ∉ `ifsToStage` → `insertIfAbsent(%51, stage=2, epilogueCluster)`  
+
+But `%51` is **already** scheduled (cluster 4 from `scheduleKeyOps`). `insertIfAbsent` does **not** move it → stays stage 2 / cluster 4. The new back cluster (id 5) may be empty here.
+
+(If `%51` had never been scheduled, it would land on this new epilogue cluster at stage `numStages-1`.)
+
+### 4.5 Return + schedule snapshot after this function
+
+```text
+return afterPrologue;  # cluster id 1 — first non-prologue cluster
+```
+
+**`ifsToStage`:** `{ %41 → 0 }`
+
+**`schedule` (conceptually):**
+
+**Table: Schedule snapshot after `schedulePrologueAndEpilogue`**
+
+| op | SSA | stage | cluster id | cluster role |
+|----|-----|-------|------------|----------------|
+| `%41` tile-index if | `%41` | 0 | **0** | **prologue** (new front) |
+| `%50` select | `%50` | 2 | **1** | after prologue (old 0) |
+| `%47` dot | `%47` | 2 | **1** | same |
+| `%45`/`%46` converts | … | 2 | **1** | same |
+| `%43`/`%44` loads | … | 0 | **3** | load cluster (was 2) |
+| `%51` epilogue if | `%51` | 2 | **4** | epilogue (was 3; not moved again) |
+
+```text
+cluster list order: 0 (prologue) → 1 (compute) → 2 (unused) → 3 (loads) → 4 (epilogue) → 5 (new empty back)
+```
+
+Within each iteration, lower cluster id runs first among scheduled ops.
+
+Later passes (`scheduleDependencies`, dist-1, remaining) further split/renumber clusters — see §5 / final `.ttir` attrs.
+
+---
+
+## 5. Note vs `schedule_loops_debug.log`
+
+The `.log` / `.ttir` is **after the full schedule pass** (deps, prologue/epilogue, cluster splits). Example final attrs:
 
 - loads `%43`/`%44`: `loop.stage = 0`, `loop.cluster = 5`
 - convert/dot/select: `loop.stage = 2`, `loop.cluster = 2`
+- prologue if `%41`: `loop.stage = 0`, `loop.cluster = 1`
 - epilogue if `%51`: `loop.stage = 2`, `loop.cluster = 6`
 - `scf.for`: `tt.scheduled_max_stage = 2`
 
-Stages match §2.2.4 `opToStage`; cluster ids are remapped later.
+Stages match §2.2.4 `opToStage` for key ops; cluster ids are remapped by later steps beyond §4.
