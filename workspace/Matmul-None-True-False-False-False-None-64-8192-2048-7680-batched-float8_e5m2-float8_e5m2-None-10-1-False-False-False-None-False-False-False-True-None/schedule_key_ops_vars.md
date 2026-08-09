@@ -2,24 +2,49 @@
 
 Companion to `schedule_loops_debug.log` (same directory).
 
-## 0. Context
+## 0. Overview
 
-- **0.1** Kernel / IR: `_p_matmul_…_64x256x128x1` flattened `scf.for` (`%22`)
-- **0.2** Pass: `tritongpu-schedule-loops` (`ScheduleLoops.cpp` + `Schedule.cpp` / `AssignLatencies.cpp`)
-- **0.3** Inputs: `num_stages=3` → load latency `(3-1)/(0+1) = 2`
-- **0.4** Scope: full coarse schedule of the for-body through §§1–7 (latency → key ops → prologue/epilogue → deps → dist-1 → remaining/serialize). Final attrs match `schedule_loops_debug.ttir`.
-- **0.5** SSA ids refer to the for-body in `schedule_loops_debug.log`.
+### 0.1 Document context
 
-### 0.6 Overview of §§1–7 — one schedule scheme
+- **Kernel / IR:** `_p_matmul_…_64x256x128x1` flattened `scf.for` (`%22`)
+- **Pass:** `tritongpu-schedule-loops` (`ScheduleLoops.cpp` + `Schedule.cpp` / `AssignLatencies.cpp`)
+- **Inputs:** `num_stages=3` → load latency `(3-1)/(0+1) = 2`
+- **Scope:** full coarse schedule of the for-body through §§1–7 (latency → key ops → prologue/epilogue → deps → dist-1 → remaining/serialize). Final attrs match `schedule_loops_debug.ttir`.
+- **SSA ids:** refer to the for-body in `schedule_loops_debug.log`.
 
-**Overall I/O**
+### 0.2 Theory — general-case stage / cluster scheduling
+
+Abstract loop:
+
+```text
+num_stages = S
+scf.for i:
+  load(i)
+  dot(i)
+  update(i) → carried to i+1
+```
+
+This is **coarse software pipelining**: split one logical iteration into **waves**, then overlap waves from different iterations in one body execution.
+
+**Table 0.1: Stage vs cluster meanings**
+
+| tag | meaning |
+|-----|---------|
+| **`stage`** | which pipeline **wave** / which logical iteration the op belongs to in the steady state |
+| **`cluster`** | total **order** for serializing overlapped pieces inside the pipelined body (producer before consumer; prologue before compute before prefetch before epilogue) |
+
+**Goal.** Without pipelining: `load(i); dot(i); update(i)` then next `i`. With `S` stages, **issue load for a future iter while computing the current one** so memory latency hides behind MMA.
+
+### 0.2 Pass pipeline §§1–7
+
+**Table 0.2: Overall schedule I/O**
 
 | | |
 |--|--|
 | **In** | for-body IR + `num_stages` (and latency assignment from loads→dot) |
 | **Out** | each scheduled op tagged with **`loop.stage`** (pipeline wave) and **`loop.cluster`** (order within / across waves) |
 
-**Seven parts (what each does)**
+**Table 0.3: Seven scheduling parts**
 
 | § | artifact / pass | role |
 |---|-----------------|------|
@@ -31,16 +56,16 @@ Companion to `schedule_loops_debug.log` (same directory).
 | **6** | `scheduleDistanceOneDependencies` | loop-carried producers via yield→iter_arg (`stage+1`, `newBefore`) |
 | **7** | `scheduleRemainingToLastStage` + serialize | catch-all leftovers → last stage; stamp attrs (no-op top-level here) |
 
-**How they co-work**
+### 0.3 How the parts co-work
 
 1. **Latency path first (§§1–3):** discover how far loads should lead the dot → assign waves → seed `schedule` with the load→convert→dot→yield-user skeleton.
 2. **Boundaries (§4):** attach prologue/epilogue `scf.if`s around that skeleton without redoing the latency math.
 3. **Fill the body (§§5–6):** pull in remaining for-body ops — first ordinary SSA deps (§5), then carried / next-iter updates that §5 deliberately skipped (§6).
 4. **Close + emit (§7):** dump any leftover top-level ops onto the last stage (cluster-order fixed vs last-stage defs), then serialize → `.ttir` attrs.
 
-Steady-state intuition on this IR: body ≈ `loads(i+2)` ‖ `compute(i)`, with stage-1 holding dist-1 updates for the next iter.
+Steady-state on this IR: body ≈ `loads(i+2)` ‖ `compute(i)`, with stage-1 holding dist-1 updates for the next iter.
 
-**Internal connections (dataflow)**
+### 0.4 Internal connections (dataflow)
 
 ```text
 num_stages, loads→dot
@@ -115,7 +140,7 @@ Assume `num_stages = 3` → stage budget `numStages - 1 = 2`.
 %47 = tt.dot %45, %46, %arg51
 ```
 
-**Table: Example A — load latency key variables**
+**Table 1.1: Example A — load latency key variables**
 
 | key variable | value |
 |--------------|-------|
@@ -135,7 +160,7 @@ One load hop uses the **full** stage budget (gap of 2).
 %47 = tt.dot %45, %46, %arg51
 ```
 
-**Table: Example B — load latency key variables (parent load)**
+**Table 1.2: Example B — load latency key variables (parent load)**
 
 | key variable | value |
 |--------------|-------|
@@ -148,7 +173,7 @@ Budget split across **two** load hops; both loads still get the same `opLatency`
 
 #### 1.2.3 Comparison
 
-**Table: Example A vs B — loadLatency comparison**
+**Table 1.3: Example A vs B — loadLatency comparison**
 
 | | maxIndLevel | `loadLatency` | intuition |
 |--|-------------|---------------|-----------|
@@ -169,7 +194,7 @@ In the flattened `scf.for`, A/B `descriptor_load`s are **direct** (indices from 
 
 So this is **example A** (§1.2.1):
 
-**Table: This IR — `opLatency` entries**
+**Table 1.4: This IR — `opLatency` entries**
 
 | op | SSA | in `opLatency`? | value |
 |----|-----|-----------------|-------|
@@ -243,7 +268,7 @@ computeDistance(%43)                         # load, lat=2
 Call order (into recursion): `%43 → %45 → %47 → %50`, then `%51`.
 Write order (memoize on return): `%50`, `%51`, `%47`, `%45`, `%43`.
 
-**Table: A chain — `distance` from `%43`**
+**Table 2.1: A chain — `distance` from `%43`**
 
 | op | SSA | lat | users (in-block) | `distance` |
 |----|-----|-----|------------------|------------|
@@ -255,7 +280,7 @@ Write order (memoize on return): `%50`, `%51`, `%47`, `%45`, `%43`.
 
 #### 2.2.2 B chain (`%44`)
 
-**Table: B chain — `distance` from `%44`**
+**Table 2.2: B chain — `distance` from `%44`**
 
 | op | SSA | lat | users (in-block) | `distance` |
 |----|-----|-----|------------------|------------|
@@ -287,7 +312,7 @@ maxDistance = 2
 
 #### 2.2.4 `opToStage` — pipeline waves
 
-##### General idea
+##### 2.2.4.1 General idea
 
 Software pipelining does **not** run the whole for-body of iteration `i` as one atomic chunk. It:
 
@@ -297,7 +322,7 @@ Software pipelining does **not** run the whole for-body of iteration `i` as one 
 
 On this IR the key path only uses waves **0** and **2** (`maxDistance = 2`; ignore empty wave **1** for now — dist-1 ops fill it later in §6).
 
-##### Formula
+##### 2.2.4.2 Formula
 
 ```text
 opToStage[op] = maxDistance - distance[op]
@@ -308,7 +333,7 @@ opToStage[op] = maxDistance - distance[op]
 
 Same op set as `distance`. In code, `opToStage` is a `MapVector` filled by `for (op, dist : distance)` (hash order). Below we keep the **§2.2.3 memoize order**.
 
-**Table: This IR — `opToStage` from `distance`**
+**Table 2.3: This IR — `opToStage` from `distance`**
 
 | op | SSA | distance | `opToStage` (wave) |
 |----|-----|----------|---------------------|
@@ -329,7 +354,7 @@ With waves, the steady-state body overlaps an early wave of a **newer** iter wit
 one steady body  ≈  loads(i+2)   +   convert/dot/epilogue(i)
 ```
 
-**Table: Overlap of waves across iterations (ignore stage 1)**
+**Table 2.4: Overlap of waves across iterations (ignore stage 1)**
 
 | stage in body | iteration being served | ops (examples) |
 |---------------|------------------------|----------------|
@@ -383,7 +408,7 @@ cluster_for_stage(s) = clusters[maxStage - s]
 
 With `maxStage = 2`:
 
-**Table: Stage → cluster id mapping (`maxStage = 2`)**
+**Table 3.1: Stage → cluster id mapping (`maxStage = 2`)**
 
 | stage | `maxStage - stage` | cluster id |
 |-------|--------------------|------------|
@@ -412,7 +437,7 @@ clusters[2] = newAtBack()  → id 2   # for stage 0
 
 `schedule.insert(op, stage, clusters[maxStage - stage])`
 
-**Table: Initial `schedule.insert` (before epilogue move)**
+**Table 3.2: Initial `schedule.insert` (before epilogue move)**
 
 | op | SSA | stage | cluster |
 |----|-----|-------|---------|
@@ -436,7 +461,7 @@ On this IR only **`%51`** qualifies:
 
 #### 3.2.4 Final `schedule` from `scheduleKeyOps`
 
-**Table: Final `schedule` after `scheduleKeyOps`**
+**Table 3.3: Final `schedule` after `scheduleKeyOps`**
 
 | op | SSA | stage | cluster |
 |----|-----|-------|---------|
@@ -476,9 +501,9 @@ For `stage = 0 .. numStages-1`, for each scheduled op with that stage:
 
 **`DenseMap::insert` does not overwrite.** Outer loop visits **increasing** stages, so the **lowest** stage that discovers an `if` wins — independent of load-vs-convert order inside `getOpsInOrder`.
 
-#### This IR
+#### 4.2.1 This IR
 
-**Table: Backward-slice discovery for `ifsToStage`**
+**Table 4.1: Backward-slice discovery for `ifsToStage`**
 
 | Scheduled op | stage | `scf.if` in backward slice? |
 |--------------|-------|-----------------------------|
@@ -513,7 +538,7 @@ after:   0' → 1 → 2 → 3 → 4
          (old 0/1/2/3 became 1/2/3/4)
 ```
 
-**Table: `schedule` after prologue `newAtFront` / insert**
+**Table 4.2: `schedule` after prologue `newAtFront` / insert**
 
 | op | stage | cluster (after prologue insert) |
 |----|-------|----------------------------------|
@@ -551,7 +576,7 @@ return afterPrologue;  # cluster id 1 — first non-prologue cluster
 
 **`schedule` (conceptually):**
 
-**Table: Schedule snapshot after `schedulePrologueAndEpilogue`**
+**Table 4.3: Schedule snapshot after `schedulePrologueAndEpilogue`**
 
 | op | SSA | stage | cluster id | cluster role |
 |----|-----|-------|------------|----------------|
@@ -606,7 +631,7 @@ For each `operand` in `getNestedOperands(op)`:
 
 ### 5.3 Starting schedule & visit order
 
-**Table: Input schedule (§4.5) + `getOpsInOrder` visit order**
+**Table 5.1: Input schedule (§4.5) + `getOpsInOrder` visit order**
 
 | visit order (among matching stage) | op | SSA | stage | cluster |
 |------------------------------------|----|-----|-------|---------|
@@ -653,7 +678,7 @@ Filter each root: nested operands → skip block args / outer defs → `insertMi
 
 ### 5.5 Schedule snapshot after `scheduleDependencies`
 
-**Table: Schedule after deps (`insertDepsOfOp`)**
+**Table 5.2: Schedule after deps (`insertDepsOfOp`)**
 
 | op | SSA | stage | cluster id | note |
 |----|-----|-------|------------|------|
@@ -732,7 +757,7 @@ for op in forBody (IR order), if already scheduled:
 
 `numStages = 3` → only **stage 0** consumers are eligible (`stage < 2`).
 
-**Table: Stage-0 consumers after §5.5**
+**Table 6.1: Stage-0 consumers after §5.5**
 
 | op | stage | cluster (pre–dist-1) | for-body iter_args in nested operands? |
 |----|-------|----------------------|----------------------------------------|
@@ -784,7 +809,7 @@ scf.yield %54, %41#3, %51#0, %51#1, %48, %50, %41#0, %41#1, %41#2
 
 ### 6.5 Schedule snapshot after `scheduleDistanceOneDependencies`
 
-**Table: Schedule after dist-1**
+**Table 6.2: Schedule after dist-1**
 
 | op | SSA | stage | cluster id (after both `newBefore`s) | note |
 |----|-----|-------|--------------------------------------|------|
@@ -878,7 +903,7 @@ So `opToCluster` is **{}**, the BFS never inserts, and this pass is a **no-op**.
 
 `schedule.serialize(forOp)` writes the coarse schedule onto ops; `scf.for` also gets `tt.scheduled_max_stage = 2`.
 
-**Table: Final attrs (matches §6.5; §7 added nothing)**
+**Table 7.1: Final attrs (matches §6.5; §7 added nothing)**
 
 | op | SSA | `loop.stage` | `loop.cluster` |
 |----|-----|--------------|----------------|

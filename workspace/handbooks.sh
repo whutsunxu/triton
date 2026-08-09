@@ -20,7 +20,7 @@ SourceFile=/Volumes/case_sensitive_workspace/triton/workspace/Matmul-None-False-
 ## triton-opt build and run
 TRITON_OPT=/Volumes/case_sensitive_workspace/triton/build/cmake.linux-x86_64-cpython-3.12/bin/triton-opt
 FileCheck=/Volumes/case_sensitive_workspace/triton/python/triton/FileCheck
-#SourceFile=/Volumes/case_sensitive_workspace/triton/test/TritonGPU/loop-pipeline.mlir # /Volumes/case_sensitive_workspace/triton/workspace/Matmul-None-False-False-False-False-None-128-8192-2048-7680-batched-float8_e5m2-float8_e5m2-None-10-1-False-False-False-None-False-False-False-True-None/irs/04b_before_ttgpuir_add_pipeline.ttgir____matmul_NNN_fp8e5xfp8e5xfp8e5_128x256x128x1
+
 SourceFile=/Volumes/case_sensitive_workspace/triton/workspace/Matmul-None-False-False-False-False-None-128-8192-2048-7680-batched-float8_e5m2-float8_e5m2-None-10-1-False-False-False-None-False-False-False-True-None/irs/04a_before_ttgpuir_add_assign_latencies.ttgir____matmul_NNN_fp8e5xfp8e5xfp8e5_128x256x128x1
 
 "$TRITON_OPT" "$SourceFile" --test-print-alignment >& mem.log 2>&1
@@ -42,9 +42,35 @@ OutLog=/Volumes/case_sensitive_workspace/triton/workspace/schedule_loops_debug.l
   -o "$OutIR" \
   >"$OutLog" 2>&1
 
-# stage/cluster live on ops in OutIR; debug dump also has "Initial/Final coarse schedule"
-rg -n 'loop\.(stage|cluster)|tt\.scheduled_max_stage|tt\.latency' "$OutIR" | head -40
 
+## Dump partition-scheduling GraphViz (.dot) via visualize()
+## Env: TRITON_PARTITION_SCHEDULING_ENABLE_DUMP_DOT=1
+## Optional filters:
+##   TRITON_PARTITION_SCHEDULING_DUMP_DATA_ONLY=1
+##   TRITON_PARTITION_SCHEDULING_DUMP_LOOP_ONLY=1
+## Dots are written to CWD as:
+##   graph-<func>_<idx>-<NNNN>-<step>.dot
+## Need tt.warp_specialize on the scf.for (use schedule_loops_debug.ttir or IR that already has it).
+TRITON_OPT=/Volumes/case_sensitive_workspace/triton/build/cmake.linux-x86_64-cpython-3.12/bin/triton-opt
+CASE_DIR=/Volumes/case_sensitive_workspace/triton/workspace/Matmul-None-True-False-False-False-None-64-8192-2048-7680-batched-float8_e5m2-float8_e5m2-None-10-1-False-False-False-None-False-False-False-True-None
+SourceFile="$CASE_DIR/schedule_loops_debug.ttir"
+DOT_DIR="$CASE_DIR/partition_scheduling_dots"
+OutIR="$CASE_DIR/after_partition_scheduling.ttir"
+OutLog="$CASE_DIR/partition_scheduling_debug.log"
+
+mkdir -p "$DOT_DIR"
+cd "$DOT_DIR"
+TRITON_PARTITION_SCHEDULING_ENABLE_DUMP_DOT=1 \
+TRITON_PARTITION_SCHEDULING_DUMP_LOOP_ONLY=1 \
+"$TRITON_OPT" "$SourceFile" \
+  --debug-only=tritongpu-partition-scheduling \
+  -tritongpu-partition-scheduling \
+  -o "$OutIR" \
+  >"$OutLog" 2>&1
+
+# Render (needs graphviz `dot`):
+# for f in graph-*.dot; do dot -Tpng "$f" -o "${f%.dot}.png"; done
+# ls -1 graph-*.dot
 
 
 ## run test_matmul.py with nsys profile
