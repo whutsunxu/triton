@@ -8,7 +8,9 @@ Date: 2026-08-05
 
 ### 0a. Generate SSH key + configure GitHub access (**do this first on a new host**)
 
-> **Required before `git fetch` / `git push` over SSH.**  
+> **MUST use SSH for all git remote traffic — do not use HTTPS.**  
+> Use `git@github.com:…` remotes only. Do **not** `git fetch/pull/push` via `https://github.com/…`.  
+> Required before `git fetch` / `git push`.  
 > Key lives on the durable volume so it survives most instance rebuilds.
 
 **Step 1 — Generate the key** (skip if the files already exist):
@@ -55,6 +57,18 @@ ssh -T git@github.com
 # expect: Hi whutsunxu! You've successfully authenticated...
 ```
 
+**Step 4 — Force the repo remote to SSH (not HTTPS):**
+
+```bash
+cd /Volumes/case_sensitive_workspace/triton
+git remote -v
+# must show: git@github.com:whutsunxu/triton.git
+
+# If it shows https://github.com/..., fix it:
+git remote set-url origin git@github.com:whutsunxu/triton.git
+git remote -v
+```
+
 Expected local git identity (set if committing from this host):
 
 - `user.name`: `whutsunxu`
@@ -87,10 +101,84 @@ clangd --version
 
 Docs: `workspace/clangd_setup.md`. Repo config: `.clangd` (uses root `compile_commands.json` symlink).
 
+### 0c. tmux easy scroll (mouse + large history) — **per SSH host**
+
+Durable config lives on the volume and is symlinked into `$HOME`:
+
+```bash
+# Already created at:
+#   /Volumes/case_sensitive_workspace/.tmux.conf
+ln -sfn /Volumes/case_sensitive_workspace/.tmux.conf ~/.tmux.conf
+
+# Apply to a running session (or just start a new `tmux`):
+tmux source-file ~/.tmux.conf
+```
+
+What it enables:
+
+| Action | How |
+|--------|-----|
+| Scroll with mouse wheel | works in the active pane (`set -g mouse on`) |
+| Enter scroll / copy mode | `Ctrl-b` then `[` |
+| Exit copy mode | `q` or `Enter` |
+| Half-page up / down (in copy mode) | `Ctrl-u` / `Ctrl-d` |
+| Reload config | `Ctrl-b` then `r` |
+
+Also sets `history-limit 100000` and vi keys in copy mode.
+
+**Verify:**
+
+```bash
+tmux show -g mouse
+# mouse on
+tmux show -g history-limit
+# history-limit 100000
+```
+
+### 0d. Graphviz (view partition-scheduling `.dot` dumps) — **per SSH host**
+
+Needed for the Cursor Graphviz plugin and for rendering DOTs to PNG.
+
+**Install:**
+
+```bash
+sudo apt-get install -y graphviz
+which dot && dot -V
+# expect: /usr/bin/dot
+#         dot - graphviz version 2.43.0 …
+```
+
+**This run:** `graphviz` 2.42.2 / `dot` 2.43.0 installed.
+
+**View in Cursor:**
+
+1. Open a `.dot` under `…/partition_scheduling_dots/`
+2. Command Palette → **Graphviz: Open Preview to the Side** (or the preview icon)
+
+**Or render PNGs:**
+
+```bash
+DOT_DIR=workspace/Matmul-None-True-False-False-False-None-64-8192-2048-7680-batched-float8_e5m2-float8_e5m2-None-10-1-False-False-False-None-False-False-False-True-None/partition_scheduling_dots
+cd /Volumes/case_sensitive_workspace/triton/$DOT_DIR
+
+# key milestones
+dot -Tpng graph-*_0-0000-input.dot -o graph-_p_matmul_…_0-0000-input.png
+dot -Tpng graph-*_0-0004-initial.dot -o graph-_p_matmul_…_0-0004-initial.png
+dot -Tpng graph-*_0-0044-final.dot -o graph-_p_matmul_…_0-0044-final.png
+
+# or all:
+# for f in graph-*.dot; do dot -Tpng "$f" -o "${f%.dot}.png"; done
+```
+
+Then open the `.png` in Cursor.
+
 ## 1. Fetch / checkout latest branch
+
+> Use **SSH only** (`origin` = `git@github.com:whutsunxu/triton.git`). Never fetch via HTTPS.
 
 ```bash
 cd /Volumes/case_sensitive_workspace/triton
+git remote -v   # confirm git@github.com:… (not https://)
 git fetch origin matmul_perf_analysis
 git checkout matmul_perf_analysis
 git pull --ff-only origin matmul_perf_analysis
@@ -175,4 +263,6 @@ Baseline path:
 | `workspace/rerun_nsys_20260805_095409/` | nsys `.nsys-rep`, `.sqlite`, `.log`, compare txt |
 | `workspace/setup_clangd_cursor.sh` | portable clangd bootstrap |
 | `workspace/clangd_setup.md` | clangd docs |
+| `/Volumes/case_sensitive_workspace/.tmux.conf` | durable tmux scroll config (§0c) |
+| system `graphviz` / `dot` | render partition-scheduling `.dot` dumps (§0d) |
 | `workspace/smoke_test.md` | this summary |
