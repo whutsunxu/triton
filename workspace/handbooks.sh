@@ -50,10 +50,10 @@ OutLog=/Volumes/case_sensitive_workspace/triton/workspace/schedule_loops_debug.l
 ##   TRITON_PARTITION_SCHEDULING_DUMP_LOOP_ONLY=1
 ## Dots are written to CWD as:
 ##   graph-<func>_<idx>-<NNNN>-<step>.dot
-## Need tt.warp_specialize on the scf.for (use schedule_loops_debug.ttir or IR that already has it).
+## Need tt.warp_specialize on the scf.for (use stage_cluster.ttir or IR that already has it).
 TRITON_OPT=/Volumes/case_sensitive_workspace/triton/build/cmake.linux-x86_64-cpython-3.12/bin/triton-opt
-CASE_DIR=/Volumes/case_sensitive_workspace/triton/workspace/Matmul-None-True-False-False-False-None-64-8192-2048-7680-batched-float8_e5m2-float8_e5m2-None-10-1-False-False-False-None-False-False-False-True-None
-SourceFile="$CASE_DIR/schedule_loops_debug.ttir"
+CASE_DIR=/Volumes/case_sensitive_workspace/triton/workspace/pass_analysis
+SourceFile="$CASE_DIR/stage_cluster.ttir"
 DOT_DIR="$CASE_DIR/partition_scheduling_dots"
 OutIR="$CASE_DIR/after_partition_scheduling.ttir"
 OutLog="$CASE_DIR/partition_scheduling_debug.log"
@@ -70,7 +70,7 @@ TRITON_PARTITION_SCHEDULING_DUMP_LOOP_ONLY=1 \
 
 # Render (needs graphviz `dot`):
 # for f in graph-*.dot; do dot -Tpng "$f" -o "${f%.dot}.png"; done
-# ls -1 graph-*.dot
+# ls -1 graph-*.dot graph-*.png
 
 
 ## run test_matmul.py with nsys profile
