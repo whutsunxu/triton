@@ -525,22 +525,119 @@ after:   alloc;
 | **Sibling** | `nvws-insert-tmem-aref` handles **TMEM / MMAv5** separately — this pass **skips** `MMAv5OpInterface`, `TMEMAllocOp`, `TMEMStoreOp` |
 | **This matmul** | load partition `1` → compute/store partition `0` via aref on `tt.descriptor_load` results (and similar register values) |
 
-After PartitionScheduling, SSA still looks shared across partitions. Before PartitionLoops clones one loop body per partition, **cross-partition values** must become **explicit channels**: `nvws.aref_create` + **put** (producer) / **get** (consumer) around shared-memory buffers.
+## 3.1 General idea / mechanism
 
-## 3.1 General idea — three cases (plus MMAv5 elsewhere)
+### Why aref?
 
-`runOnFunction` walks each `tt.warp_specialize` for that has partitions, then:
+After PartitionScheduling the IR still looks like **one** loop with shared SSA and `ttg.partition` attrs:
 
-| Case | What | How |
-|------|------|-----|
-| **1. Loop-carried args** | Region iter_args with tensor / float / int type | At **start of for body**, treat each iter_arg as a “produced” value whose producer partitions come from `ttg.partition.outputs[argNumber − 1]` (IV is arg 0). Put/get if a **later use** lives in another partition. Models “producer partition wrote this for next iter / init → consumer partition reads it.” |
-| **2. Memory ops** | `local_alloc` or `local_alloc(desc_load)` | Walked **first**. Put can **rewrite** TMA into the aref buffer (and mark alloc/load stale). Prefer this before bare register uses of the same load. |
-| **3. Other non-TMEM ops** | Everything else with partitions (incl. leftover `desc_load` register uses) | Walk after memory ops; insert aref after the producer op. Typical path for this FP8 matmul: `descriptor_load` (p1) → `convert_layout` / `dot` (p0). |
-| **MMAv5 / TMEM** | Skipped here | `InsertTmemAref` builds TMEM-backed arefs; do not double-handle in this walk. |
+```mlir
+%43 = tt.descriptor_load ... {ttg.partition = array<i32: 1>}
+%45 = ttg.convert_layout %43 {ttg.partition = array<i32: 0>}
+```
 
-Same-partition SSA stays as normal SSA — **no aref** if every use’s partition set is ⊆ producer’s.
+That `%43 → %45` edge is fine only while both ops share one region / register file. **PartitionLoops** later splits the WS for into **separate partition regions** (different warp groups). Then p1 keeps the load, p0 keeps convert/dot — they **do not share SSA**. A raw cross-partition SSA use cannot survive.
 
-## 3.2 How we detect “producer ≠ consumer partitions”
+So the producer must leave data somewhere both sides can see: usually **shared memory** (TMEM for the sibling pass). **Aref** is the handle for that buffer; **put / get** are the protocol for using it safely.
+
+| Piece | Role |
+|--------|------|
+| **`aref.create`** | Handle wrapping an allocated buffer. Created **outside** the WS loop so both partitions see the same channel. |
+| **`aref.put.enter` / `put.exit`** | Producer critical section: enter → writable buf + token; write; exit = published. |
+| **`aref.get.enter` / `get.exit`** | Consumer critical section: enter → readable buf + token; read; exit = done reading. |
+| **token** | SSA stand-in for the handshake; **LowerAref** turns enter/exit into **mbarriers**. |
+
+Aref does **not** compute — only names the shared buffer and brackets who may touch it when. Same-partition SSA stays as normal SSA (no aref).
+
+### How data moves (put / get)
+
+Same edge as this matmul (`p1` load → `p0` compute):
+
+**1. Create channel once (outside the loop)**
+
+```mlir
+%buf  = ttg.local_alloc ...           // real smem
+%aref = nvws.aref.create %buf         // handle both partitions use
+```
+
+**2. Producer (partition 1) — put = write into the channel**
+
+```mlir
+%tok_p, %buf_w = nvws.aref_put_enter %aref   // may write
+nvws.descriptor_load ... into %buf_w         // TMA fills aref buffer
+nvws.aref_put_exit %aref, %tok_p             // publish
+```
+
+No longer “produce register `%43` for someone else” — produce by **storing into the aref buffer**.
+
+**3. Consumer (partition 0) — get = read from the channel**
+
+```mlir
+%tok_g, %buf_r = nvws.aref_get_enter %aref
+%43' = ttg.local_load %buf_r                 // p0-local registers
+%45  = ttg.convert_layout %43'
+%47  = tt.dot %45, ...
+nvws.aref_get_exit %aref, %tok_g
+```
+
+**4. After PartitionLoops (conceptually)**
+
+```
+warp group 1 (load):   put_enter → TMA → put_exit
+warp group 0 (compute): get_enter → local_load → cvt/dot → get_exit
+         \________________ aref / smem ________________/
+```
+
+No SSA edge between groups — only **shared buffer + sync**. Pipelining/multibuffering (later) can stage multiple slots on the same aref so load and compute overlap.
+
+### What this pass processes
+
+`runOnFunction` walks each `tt.warp_specialize` for that has partitions, then handles **three producer kinds independently** (same put/get mechanism; different where the produced value comes from). MMAv5/TMEM are skipped here (`InsertTmemAref`). Details in §3.2.
+
+## 3.2 Three cases (where producers come from)
+
+| # | Case | Producer value | Pass order |
+|---|------|----------------|------------|
+| 1 | **Loop-carried args** | Region iter_arg (tensor / float / int); producer partitions from `ttg.partition.outputs[argNumber − 1]` (IV = arg 0) | At **start of for body** |
+| 2 | **Memory ops** | `local_alloc` or `local_alloc(desc_load)` | **First** among in-body ops — put can TMA straight into the aref buf and mark alloc/load stale; prefer before bare register uses of the same load |
+| 3 | **Other non-TMEM ops** | Remaining partitioned ops (incl. leftover `desc_load` register uses) | **After** memory ops; insert after the producer. This FP8 matmul: `descriptor_load` (p1) → `convert_layout` / `dot` (p0) |
+
+**MMAv5 / TMEM:** skipped (`MMAv5OpInterface`, `TMEMAllocOp`, `TMEMStoreOp`) → sibling `InsertTmemAref`.
+
+### Case sketches
+
+**Loop-carried** (fake; this matmul’s `%arg51` is often same-partition only):
+
+```mlir
+// partition.outputs for %acc includes p1; use in p0 → aref at body start
+scf.for ... iter_args(%acc = %cst) -> (...) {
+  %x = arith.addf %acc, %one {ttg.partition = array<i32: 0>}
+  scf.yield ... %newAcc ...   // produced under p1
+}
+```
+
+**Memory ops** — `local_alloc(desc_load)` processed before bare load uses:
+
+```mlir
+// Before
+%ld = tt.descriptor_load %desc[...] {ttg.partition = array<i32: 1>}
+%mem = ttg.local_alloc %ld {ttg.partition = array<i32: 1>}
+%c  = ttg.local_load %mem {ttg.partition = array<i32: 0>}
+
+// After: put TMA into aref buf (erase %ld/%mem); get retargets / loads for p0
+```
+
+If alloc and load have **different** partition ids, they are **not** fused (`isLoadAndAlloc`) — two separate producers.
+
+**Non-tmem register** (real pattern from `after_partition_scheduling.ttir`):
+
+```mlir
+%43 = tt.descriptor_load ... {ttg.partition = array<i32: 1>}
+%45 = ttg.convert_layout %43 {ttg.partition = array<i32: 0>}
+// → put TMA/store into aref; get local_load; %45 uses loaded value
+```
+
+## 3.3 How we detect “producer ≠ consumer partitions”
 
 Core gate is inside `insertArefs` → `processResultUses`:
 
@@ -581,25 +678,9 @@ For produced value `%43` with `partitions = {1}`:
 | `%45` convert_layout | `{0}` | `{0}` | aref get on partition **0** |
 | (if some same-p1 use existed) | `{1}` | `∅` | ignored |
 
-Same idea for `%44` → `%46`.
+Same idea for `%44` → `%46`. Loop-carried detection uses the same `remove` rule on iter_arg uses (see §3.2 sketch).
 
-### Fake IR — loop-carried cross-partition (not in this dump)
-
-This matmul’s carried `%arg51` acc stays on partition `0` only, so often **no** iter_arg aref. Illustrative case:
-
-```mlir
-// ttg.partition.outputs[..., array<i32: 1>, ...]  // for %acc iter_arg
-scf.for ... iter_args(%acc = %cst) -> (...) {
-  // producer partition 1 “owns” the carried value (from yield / init)
-  %x = arith.addf %acc, %one {ttg.partition = array<i32: 0>}  // consumer p0
-  ...
-  scf.yield ... %newAcc ...  // written under p1
-}
-```
-
-`processResultUses(%acc)`: use on `%x` has `{0}`, producer `{1}` → `{0}` remains → insert aref at body start.
-
-## 3.3 Create put / get, how they cowork, replace old SSA
+## 3.4 Create put / get, how they cowork, replace old SSA
 
 Once `resultsPerPartition` is non-empty:
 
@@ -631,77 +712,9 @@ Producer SSA (`%43`) is no longer the channel; the aref buffer is.
    - scalar → load + unsplat.
 4. `ArefGetExitOp` after last consumer / post-dominator.
 
-### Cowork (one aref, two partitions)
+Put publishes; get consumes (full IR sketch in §3.1). Later `LowerAref` turns enter/exit into barriers / multibuffers; PartitionLoops keeps put ops in p1’s clone and get ops in p0’s clone.
 
-```
-  [outside WS for]  %aref = nvws.aref_create ...
-  [p1 put]          enter → TMA/store into buf → exit
-  [p0 get]          enter → local_load → (cvt / dot use loaded value) → exit
-```
-
-Put publishes; get consumes. Later `LowerAref` turns enter/exit into barriers / multibuffers; PartitionLoops then keeps put ops in p1’s clone and get ops in p0’s clone.
-
-### Fake IR — after insert (same edge as real `%43`→`%45`)
-
-```mlir
-%aref_a = nvws.aref_create ... : !nvws.aref<...>   // before WS for
-
-scf.for ... {
-  // --- partition 1 (load) ---
-  %tok_p, %buf_w = nvws.aref_put_enter %aref_a {ttg.partition = array<i32: 1>}
-  nvws.descriptor_load ... into %buf_w {ttg.partition = array<i32: 1>}
-  nvws.aref_put_exit %aref_a, %tok_p {ttg.partition = array<i32: 1>}
-  // old %43 = tt.descriptor_load erased if absorbed
-
-  // --- partition 0 (compute) ---
-  %tok_g, %buf_r = nvws.aref_get_enter %aref_a {ttg.partition = array<i32: 0>}
-  %43' = ttg.local_load %buf_r {ttg.partition = array<i32: 0>}
-  %45 = ttg.convert_layout %43' {ttg.partition = array<i32: 0>} ...
-  %47 = tt.dot %45, ... {ttg.partition = array<i32: 0>} ...
-  nvws.aref_get_exit %aref_a, %tok_g {ttg.partition = array<i32: 0>}
-}
-```
-
-## 3.4 Simplified fake IR — memory ops vs non-tmem (MMAv5 note)
-
-### A) Memory ops — `local_alloc(desc_load)` (processed first)
-
-```mlir
-// Before
-%ld = tt.descriptor_load %desc[...] {ttg.partition = array<i32: 1>}
-%mem = ttg.local_alloc %ld {ttg.partition = array<i32: 1>}
-%c  = ttg.local_load %mem {ttg.partition = array<i32: 0>}   // cross
-
-// After (sketch)
-%aref = nvws.aref_create ...
-// put (p1): enter → TMA directly into aref buf → exit; erase %ld/%mem
-// get (p0): enter → consumers of %mem retargeted to aref view / load → exit
-```
-
-If alloc and load were **different** partitions, they are **not** fused (`isLoadAndAlloc` requires same partition ids) — treated as two producers.
-
-### B) Non-tmem register ops — bare `desc_load` / other tensors (this matmul)
-
-```mlir
-// Before (matches after_partition_scheduling.ttir pattern)
-%43 = tt.descriptor_load ... {ttg.partition = array<i32: 1>}
-%45 = ttg.convert_layout %43 {ttg.partition = array<i32: 0>}
-
-// After: put stores/TMA into aref; get local_loads; %45 uses loaded value
-```
-
-Same for any cross-partition tensor/scalar producer that is not TMEM/MMAv5.
-
-### C) MMAv5 / TMEM — **not** this pass
-
-```mlir
-// Skipped by InsertAref walk:
-%acc_t = ttng.tmem_alloc ...
-ttng.tc_gen5_mma ..., %acc_t, ...   // MMAv5OpInterface
-// → InsertTmemAref builds TMEM aref put/get instead of smem LocalStore/Load
-```
-
-**One-liner:** same-partition SSA stays; cross-partition edges become aref put (producer fills smem) + get (consumer loads / retargets); memory-op form is preferred when alloc wraps the load; MMAv5/TMEM use the sibling pass.
+**One-liner:** same-partition SSA stays; cross-partition edges become aref put (producer fills smem) + get (consumer loads / retargets); three producer kinds are processed independently; MMAv5/TMEM use `InsertTmemAref`.
 
 ---
 
