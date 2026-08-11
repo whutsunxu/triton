@@ -46,7 +46,7 @@ buildGraph → data mark → duplicateViewOps → (manual) → initial 1-node pa
 ### General idea
 
 1. **Mark the data path** from payload seeds (descriptor **load**, TMEM load, **MMAv5**, ops with `data` attr, …). On *this* matmul the heavy anchors are the two `descriptor_load`s and the compute/store chain (`tt.dot` is classic MMA, not MMAv5 — still treated as data/`NONE` until merged with store).
-2. **Give each data op its own partition**, then **merge** along crossing edges using **heuristics** (what *may* share a partition) and **constraints** (what *must not*, e.g. TMEM↔MMA, two MANUALS). That decides the warp cut: here **LOAD** vs **STORE/compute**.
+2. **Seed partitions from payload data values**, then only consider merges across **crossing data edges** (i.e., edges whose endpoints are marked as payload). `heuristics` pick merges that keep co-location valid; `constraints` veto incompatible groups (e.g., TMEM↔MMA, multiple MANUALs). The objective is to **minimize how much marked payload has to cross partition boundaries** (aref communication), which yields the warp cut (here **LOAD** vs **STORE/compute**).
 3. **Solve the rest** (index arith, `scf.if`/`scf.for`, reduce bodies, …) via **node–edge** dependency propagation (region union, backward/forward along edges) so every warp that needs control owns a copy of it — without merging load and MMA into one partition.
 
 ```text
@@ -136,7 +136,23 @@ If ops already have `ttg.partition = array<i32: …>`, create `MANUAL` partition
 
 **DOT:** `…-0004-initial.png`.
 
-Every **data** node without a partition gets its **own** partition (22 one-node partitions here). Index/control stay unpartitioned (white).
+Every **data** node without a partition gets its **own** partition_idx (22 one-node partitions here). Index/control stay unpartitioned (white).
+
+**partition flags are set here as well.** `node->setPartition(p)` calls `p->add(node)`, which ORs `getNodeFlags(node)` onto `partition->flags`. With one node per partition, the partition’s flags **are exactly that op’s kind**:
+
+| op (via `getNodeFlags`) | partition flag |
+|-------------------------|----------------|
+| `descriptor_load` / `gather` | `LOAD` |
+| `descriptor_store` / `scatter` (or attr `"store"`) | `STORE` |
+| MMAv5 / attr `"mma"` | `MMA` |
+| `TMEMLoad` / `TMEMStore` | `TMEM` |
+| `math.exp2` | `SFU` |
+| view (`convert_layout`, broadcast, …) | `VIEW` |
+| else (e.g. `tt.dot`, `arith.*` on this path) | `NONE` |
+
+So in `0004-initial`, each badge’s `[LOAD]` / `[VIEW]` / `[STORE]` / `[NONE]` is already the partition flag from that single op. Later **merge** ORs flags of merged nodes together (and drops `VIEW` unless the whole partition stays all-view). Numeric `Partition::id` values come only in §1.7 `assignPartitionIds`.
+
+**DOT badge caveat.** Labels look like `21{0}[STORE]` = `vizId{cost}[flags]`. Only **`[flags]`** reliably match the analysis. The leading number is a **dump-only** id from `VisualizationInfo` (first time that `Partition*` was drawn; reused across all dumps in one `analyze()`). It is **not** `Partition::id` and will **not** match final `ttg.partition` (e.g. after merge/ids you may still see viz `3`/`21` while IR gets `0`/`1`).
 
 ## 1.5 `mergePartitions`
 
@@ -146,7 +162,7 @@ Every **data** node without a partition gets its **own** partition (22 one-node 
 
 1. Worklist = **crossing** data edges (producer/consumer in different partitions).
 2. Try `heuristics` **in order**; if `apply(edge)` and all `constraints` pass → `Partition::merge(A,B)`.
-3. Merge moves **all** nodes of one partition into the other (not only the two endpoint ops).
+3. Merge moves **all** nodes of one partition into the other (not only the two endpoint ops) by changing the partition flag.
 4. Repeat to fixpoint; then pair-wise `partition_heuristics`.
 
 | item | role |
@@ -173,9 +189,9 @@ After `assignPartitionIds`, serialized ids match `after_partition_scheduling.tti
 
 **DOT:** `…-0028`…`0033-propagate` (and again after assign-no-use).
 
-Phases: region upward → backward onto non-data → forward onto leftovers → reduce body → tmem init-store patch → **re-propagate from patched stores**.
+**Background.** After merge (§1.5), only **data** ops have partitions (the warp cut is already decided: here LOAD vs STORE/compute). Index arith, `scf.if`/`scf.for`, reduce combiners, and similar **non-data** / region structure are still unlabeled, yet each warp region later needs its own copy of the control and addressing that feeds its work. Merging those into a single partition would undo the cut; leaving them empty would break `PartitionLoops` cloning.
 
-
+**Work in §1.6.** Propagate existing partition membership along nesting and SSA edges **without merging partitions**: union labels onto regions and non-data producers/consumers (and a few TMEM/reduce corner cases) so shared control can be tagged `ttg.partition = array<i32: 0, 1>` while payload stays split. Phases below: region upward → backward onto non-data → forward onto leftovers → reduce body → tmem init-store patch → re-propagate from patched stores.
 
 ### 1.6.1 Region upward (leaves → parents)
 
@@ -272,20 +288,114 @@ for in-edges: skip if edge.isDataValue()
 
 Narrower than §1.6.3 (not “all unpartitioned nodes”) — only the fan-in of the patched stores. No-op on this matmul when `patched_nodes` is empty.
 
-## 1.7 After scheduling (attrs vs real clones)
+## 1.7 `assignPartitionIds`
+
+**DOT:** `…-0034-assign-partition-ids`.
+
+Until here, partitions are unnamed buckets with **flags** only (`LOAD` / `STORE` / `MMA` / …). This step assigns stable numeric `Partition::id` values that later become `ttg.partition = array<i32: …>`.
+
+### Four ordered groups (kind heuristic)
+
+Every partition is classified into **one** of four buckets (first match wins: `STORE` before `MMA` before `LOAD`):
+
+| group | test | role |
+|-------|------|------|
+| **other** | no STORE/MMA/LOAD | default / leftover compute |
+| **store** | `flags & STORE` | descriptor store (+ merged compute on this matmul) |
+| **mma** | `flags & MMA` | MMAv5 warp (not classic `tt.dot`) |
+| **load** | `flags & LOAD` | descriptor load |
+
+Ids are then renumbered **in that group order**:
+
+```text
+other → store → [reserve default] → mma → load
+```
+
+So the intended warp-specialize shape is at most these **four kinds** of specialized warps (default/other, store, mma, load). Multiple partitions of the same kind still get consecutive ids within their group (not a hard global cap of four `Partition*` objects).
+
+### Default / id `0`
+
+```cpp
+// after assigning other + store:
+if (idx == 0)
+  idx++;   // skip 0 so MMA/LOAD never become the default partition
+```
+
+If there were no `other` and no `store` partitions, `idx` would still be `0`; bumping ensures **MMA and LOAD never own partition 0**. Partition `0` is treated as the **default** group elsewhere (e.g. `assignPartitionsForOpsWithNoUse` looks up `id == 0`).
+
+### On this matmul
+
+After merge: one **STORE** (dot+epilogue+`descriptor_store`) and one **LOAD** (two loads). No separate MMA flag (`tt.dot` is `NONE` until merged with store). Typical serialize: store/compute → `0`, loads → `1` (matches `after_partition_scheduling.ttir`).
+
+## 1.8 `assignPartitionsForOpsWithNoUse`
+
+**DOT:** `…-0035-assign-no-use`.
+
+Some nodes still have **empty** partition sets after propagate (e.g. `llvm.intr.assume`, other side-effect / no-use ops that never sat on a data edge).
+
+For each such node:
+
+1. Look at **siblings** under the same parent region (`parent->getNodes()`, skip self).
+2. For every sibling that is an **op** and already `hasPartition()`, **`addPartitions`** that sibling’s set (union; not only the first sibling).
+3. If **no** partitioned sibling was found (`!done`): assign the **default** partition with **`id == 0`** (`setPartition`). Create one with `id = 0` if it does not exist yet.
+
+Cannot just copy the parent op’s partitions (comment in code: that can pull in extras like tmem tokens). Prefer “same region peers,” else default `0`.
+
+Nuances: **all** partitioned siblings (union); fallback is “no usable sibling partition,” not merely “no siblings.”
+
+## 1.9 `duplicateCheapOps`
+
+**DOT:** `…-0042`…`duplicate` dumps.
+
+Goal: if payload leaves partition **A**, wanders through a cheap chain in partition **B**, then returns to **A**, assign that cheap path to **both** partitions (`addPartition`) so later IR cloning can run the cheap ops in A too and **skip the A→B→A aref**. No new graph `Node` here — multi-membership only; real clones are in §1.11 `cloneMultiPartitionDataOps`.
+
+1. **Cheap op + single-partition threshold**  
+   Candidate ops: `getNodeFlags == NONE` or `SFU`.  
+   Both ends of the starting crossing edge must have **exactly one** partition (`getPartitions().size() == 1`). Multi-partition nodes are skipped.
+
+2. **Cross-partition situation**  
+   For each partition, take **out-crossing** data edges. Pattern: producer in **A** (`startPartition`) → consumer cheap node in **B** (`partition`). Search only while staying on cheap, single-partition nodes in **B**.
+
+3. **DFS via `parentMap.emplace(child, node)`**  
+   From the first B node, DFS on out-edges among candidates still in **B**.  
+   `std::map<Node*, Node*> parentMap`: `parentMap[child] = node` records the predecessor so the path can be reconstructed. `stack.push_back(child)` continues the search.
+
+4. **Backward update when path re-enters A**  
+   If a child is again in `startPartition` (**A**), walk the predecessor chain:
+
+   ```cpp
+   node->addPartition(startPartition);
+   while (parentMap.find(node) != parentMap.end()) {
+     node = parentMap[node];
+     node->addPartition(startPartition);
+   }
+   ```
+
+   Every node on the cheap B-path also gets **A** (multi-partition). Not recursive child mutation — path reconstruction only.
+
+## 1.10 `serialize`
+
+Transfers partition analysis from the temporary **graph** onto the live **MLIR module** (attrs on ops / the warp-specialize `scf.for`). After this, later AWS passes read IR attrs, not the `Graph`.
+
+| attr | written on | meaning |
+|------|------------|---------|
+| `ttg.partition` | ops (and yields of `scf.for` / `scf.if`) | sorted list of partition **ids** owning that op |
+| `ttg.partition.outputs` | `scf.for` / `scf.if` / `tt.reduce` (etc.) | **per-result** partition id lists (boundary values) |
+| `ttg.partition.stages` | warp-specialize `scf.for` | array indexed by partition id: MMA → `1`, else `0` (aref buffering lag vs consumers; **not** `loop.stage`) |
+| `ttg.warp_specialize.tag` | that `scf.for` | tags which WS loop this scheduling belongs to |
+
+Also merges partition sets when several graph nodes map to the same MLIR op. Result matches `after_partition_scheduling.ttir` (e.g. `ttg.partition.stages = [0, 0]` for load+store on this matmul).
+
+## 1.11 After serialize
 
 | step | effect |
 |------|--------|
-| `assignPartitionIds` | stable numeric ids (store/other → mma → load ordering) |
-| `assignPartitionsForOpsWithNoUse` | e.g. `llvm.intr.assume` |
-| `duplicateCheapOps` | optional cheap NONE path clones to avoid aref |
-| `serialize` | write `ttg.partition` / `ttg.partition.outputs` / stages |
-| `cloneMultiPartitionDataOps` | IR-clone data ops that still have multiple partition ids |
+| `cloneMultiPartitionDataOps` | IR-clone data ops that still have multiple partition ids (so aref insert can handle them) |
 
-**For-loop control duplication** is **not** finished here: still one `scf.for` with multi-id attrs.
+**For-loop control duplication** is **not** finished here: still one `scf.for` with multi-id attrs.  
 Physical per-partition `scf.for` copies happen later in **§6 PartitionLoops** (`cloneForOp`).
 
-## 1.8 Quick map: dump index → step
+## 1.12 Quick map: dump index → step
 
 | PNG | step |
 |-----|------|
@@ -294,13 +404,115 @@ Physical per-partition `scf.for` copies happen later in **§6 PartitionLoops** (
 | `0005`–`0026` | merge steps |
 | `0027` | merged (2 partitions) |
 | `0028`–`0033` | propagate |
-| `0034`+ | assign ids / no-use / more propagate / duplicate / final |
+| `0034` | `assignPartitionIds` |
+| `0035` | `assignPartitionsForOpsWithNoUse` |
+| `0036`–`0041` | propagate (again) |
+| `0042`+ | `duplicateCheapOps` / final |
 
 ---
 
 # 2. NVWSHoistTmemStore
 
-*(TBD)*
+| | |
+|--|--|
+| **Pass** | `nvws-hoist-tmem-store` (`HoistTmemStore.cpp`) |
+| **When** | right after PartitionScheduling in AWS |
+| **This matmul** | no TMEM/MMAv5 → typically a no-op |
+
+**Goal (alloc part).** Move `ttng.tmem_alloc` **out of** the `tt.warp_specialize` `scf.for` (and nested fors) so TMEM is allocated **once**, not every iteration. Then **thread the async token** through the loop nest like any other carried value.
+
+Also folds some `tmem_store` into alloc (`FoldTmemStoreIntoAlloc`) and related cleanups; below focuses on `hoistTmemAlloc`.
+
+## 2.1 Why must the token be an iter_arg / yield?
+
+TMEM ops (`alloc` / `store` / `load` / MMAv5) form an SSA **token chain**: each op takes a dep token and produces a new one. That encodes “this buffer use happens after that one.”
+
+If alloc stays **inside** the body, the token is local to that iteration. After hoist, alloc is **outside**, but MMA still runs **inside** every iter. The token that MMA depends on (and the token MMA produces for the next use) must therefore be:
+
+1. passed **in** as a for **init / region iter_arg** (like `%acc` or any carried state), and  
+2. passed **out** via **`scf.yield`** so the next iteration / outer loop sees the updated token.
+
+Without yield, the final in-body token would die at the end of the iteration and outer SSA / next-iter deps would be broken — same reason other loop-carried args are yielded.
+
+## 2.2 Safety check (when hoist is refused)
+
+Do **not** hoist across an outer loop if an inner MMA loop’s trip count **depends on that outer IV** and you cannot prove the inner loop always executes (≥1). Otherwise some outer iters would skip MMA while a single outer alloc/token still exists (mismatched lifetime). See § comment in `hoistTmemAlloc`.
+
+## 2.3 Fake IR walkthrough (multi-tier fors)
+
+Illustrative only (types shortened). Partition ids: MMA warp = `0`.
+
+### Before hoist
+
+Alloc lives **inside** the WS for. Its token’s **only** use is as **init** of the inner MMA for (`getUniqueUserLoopAndMMA`).
+
+```mlir
+// tt.warp_specialize on outer for
+%c0 = arith.constant 0 : i32
+%c1 = arith.constant 1 : i32
+%n = ... : i32
+%k = ... : i32   // independent of %i  (safe to hoist)
+
+scf.for %i = %c0 to %n step %c1 iter_args(%arg_other = ...)
+    -> (...) {
+  // still INSIDE ws for:
+  %buf, %tok0 = ttng.tmem_alloc : ... -> !ttg.memdesc<...>, !ttg.async.token
+      {ttg.partition = array<i32: 0>}
+
+  %inner:1 = scf.for %kk = %c0 to %k step %c1
+      iter_args(%tok = %tok0) -> (!ttg.async.token) {
+    // MMA consumes/produces token (partition 0)
+    %tok1 = ttng.tc_gen5_mma ..., %tok {ttg.partition = array<i32: 0>}
+    scf.yield {ttg.partition = array<i32: 0>} %tok1 : !ttg.async.token
+  } {ttg.partition = array<i32: 0>,
+     ttg.partition.outputs = [array<i32: 0>]}
+
+  scf.yield {ttg.partition = array<i32: 0>} %arg_other : ...
+} {tt.warp_specialize, ttg.partition = array<i32: 0>, ...}
+```
+
+### What `hoistTmemAlloc` does
+
+1. **Validate** nest + trip-count independence (or `assume` proves execute-once).  
+2. **`moveBefore`** outer WS for; **remove** `ttg.partition` on alloc.  
+3. Read **`tokenPartition`** from the for that currently consumes the token (`partition.outputs` at that init-arg index).  
+4. **Outer→inner:** `addIterArgsToLoop` with the hoisted token; extend `ttg.partition` / `ttg.partition.outputs` with `tokenPartition`; set inner init to the new iter_arg.  
+5. Walk the in-body token chain to the **last unused** token (after MMA/load/store).  
+6. **Inner→outer:** `appendToForOpYield` that token so each for **yields** the updated token; result becomes the next outer yield input.
+
+### After hoist (shape)
+
+```mlir
+// OUTSIDE ws for — once:
+%buf, %tok0 = ttng.tmem_alloc : ... -> !ttg.memdesc<...>, !ttg.async.token
+// (no ttg.partition)
+
+%ws:2 = scf.for %i = %c0 to %n step %c1
+    iter_args(%arg_other = ..., %tok_o = %tok0)
+    -> (..., !ttg.async.token) {
+  %inner:1 = scf.for %kk = %c0 to %k step %c1
+      iter_args(%tok = %tok_o) -> (!ttg.async.token) {
+    %tok1 = ttng.tc_gen5_mma ..., %tok {ttg.partition = array<i32: 0>}
+    scf.yield {ttg.partition = array<i32: 0>} %tok1
+  } {ttg.partition = array<i32: 0>,
+     ttg.partition.outputs = [array<i32: 0>]}
+
+  scf.yield {ttg.partition = array<i32: 0>} %arg_other, %inner#0
+} {tt.warp_specialize,
+   ttg.partition = array<i32: 0>,
+   ttg.partition.outputs = [..., array<i32: 0>], ...}
+```
+
+```text
+before:  [ws for] { alloc;  inner for(tok=alloc_tok) { mma; yield tok } }
+after:   alloc;
+         [ws for](tok_o=alloc_tok) {
+           inner for(tok=tok_o) { mma; yield tok };
+           yield ..., inner_tok
+         }
+```
+
+**One-liner:** hoist moves **storage creation** out; **token** stays a normal loop-carried SSA value (init + yield) so each iteration’s MMA still chains dependencies correctly.
 
 ---
 
