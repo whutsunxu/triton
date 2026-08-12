@@ -349,18 +349,18 @@ Nuances: **all** partitioned siblings (union); fallback is “no usable sibling 
 
 Goal: if payload leaves partition **A**, wanders through a cheap chain in partition **B**, then returns to **A**, assign that cheap path to **both** partitions (`addPartition`) so later IR cloning can run the cheap ops in A too and **skip the A→B→A aref**. No new graph `Node` here — multi-membership only; real clones are in §1.11 `cloneMultiPartitionDataOps`.
 
-1. **Cheap op + single-partition threshold**  
-   Candidate ops: `getNodeFlags == NONE` or `SFU`.  
+1. **Cheap op + single-partition threshold**
+   Candidate ops: `getNodeFlags == NONE` or `SFU`.
    Both ends of the starting crossing edge must have **exactly one** partition (`getPartitions().size() == 1`). Multi-partition nodes are skipped.
 
-2. **Cross-partition situation**  
+2. **Cross-partition situation**
    For each partition, take **out-crossing** data edges. Pattern: producer in **A** (`startPartition`) → consumer cheap node in **B** (`partition`). Search only while staying on cheap, single-partition nodes in **B**.
 
-3. **DFS via `parentMap.emplace(child, node)`**  
-   From the first B node, DFS on out-edges among candidates still in **B**.  
+3. **DFS via `parentMap.emplace(child, node)`**
+   From the first B node, DFS on out-edges among candidates still in **B**.
    `std::map<Node*, Node*> parentMap`: `parentMap[child] = node` records the predecessor so the path can be reconstructed. `stack.push_back(child)` continues the search.
 
-4. **Backward update when path re-enters A**  
+4. **Backward update when path re-enters A**
    If a child is again in `startPartition` (**A**), walk the predecessor chain:
 
    ```cpp
@@ -392,7 +392,7 @@ Also merges partition sets when several graph nodes map to the same MLIR op. Res
 |------|--------|
 | `cloneMultiPartitionDataOps` | IR-clone data ops that still have multiple partition ids (so aref insert can handle them) |
 
-**For-loop control duplication** is **not** finished here: still one `scf.for` with multi-id attrs.  
+**For-loop control duplication** is **not** finished here: still one `scf.for` with multi-id attrs.
 Physical per-partition `scf.for` copies happen later in **§6 PartitionLoops** (`cloneForOp`).
 
 ## 1.12 Quick map: dump index → step
@@ -429,7 +429,7 @@ TMEM ops (`alloc` / `store` / `load` / MMAv5) form an SSA **token chain**: each 
 
 If alloc stays **inside** the body, the token is local to that iteration. After hoist, alloc is **outside**, but MMA still runs **inside** every iter. The token that MMA depends on (and the token MMA produces for the next use) must therefore be:
 
-1. passed **in** as a for **init / region iter_arg** (like `%acc` or any carried state), and  
+1. passed **in** as a for **init / region iter_arg** (like `%acc` or any carried state), and
 2. passed **out** via **`scf.yield`** so the next iteration / outer loop sees the updated token.
 
 Without yield, the final in-body token would die at the end of the iteration and outer SSA / next-iter deps would be broken — same reason other loop-carried args are yielded.
@@ -473,11 +473,11 @@ scf.for %i = %c0 to %n step %c1 iter_args(%arg_other = ...)
 
 ### What `hoistTmemAlloc` does
 
-1. **Validate** nest + trip-count independence (or `assume` proves execute-once).  
-2. **`moveBefore`** outer WS for; **remove** `ttg.partition` on alloc.  
-3. Read **`tokenPartition`** from the for that currently consumes the token (`partition.outputs` at that init-arg index).  
-4. **Outer→inner:** `addIterArgsToLoop` with the hoisted token; extend `ttg.partition` / `ttg.partition.outputs` with `tokenPartition`; set inner init to the new iter_arg.  
-5. Walk the in-body token chain to the **last unused** token (after MMA/load/store).  
+1. **Validate** nest + trip-count independence (or `assume` proves execute-once).
+2. **`moveBefore`** outer WS for; **remove** `ttg.partition` on alloc.
+3. Read **`tokenPartition`** from the for that currently consumes the token (`partition.outputs` at that init-arg index).
+4. **Outer→inner:** `addIterArgsToLoop` with the hoisted token; extend `ttg.partition` / `ttg.partition.outputs` with `tokenPartition`; set inner init to the new iter_arg.
+5. Walk the in-body token chain to the **last unused** token (after MMA/load/store).
 6. **Inner→outer:** `appendToForOpYield` that token so each for **yields** the updated token; result becomes the next outer yield input.
 
 ### After hoist (shape)
@@ -543,8 +543,8 @@ So the producer must leave data somewhere both sides can see: usually **shared m
 | Piece | Role |
 |--------|------|
 | **`aref.create`** | Handle wrapping an allocated buffer. Created **outside** the WS loop so both partitions see the same channel. |
-| **`aref.put.enter` / `put.exit`** | Producer critical section: enter → writable buf + token; write; exit = published. |
-| **`aref.get.enter` / `get.exit`** | Consumer critical section: enter → readable buf + token; read; exit = done reading. |
+| **`aref.put.enter` / `put.exit`** | Producer critical section: enter → writable buf + token; write; exit → published. |
+| **`aref.get.enter` / `get.exit`** | Consumer critical section: enter → readable buf + token; read; exit → done reading. |
 | **token** | SSA stand-in for the handshake; **LowerAref** turns enter/exit into **mbarriers**. |
 
 Aref does **not** compute — only names the shared buffer and brackets who may touch it when. Same-partition SSA stays as normal SSA (no aref).
@@ -720,7 +720,196 @@ Put publishes; get consumes (full IR sketch in §3.1). Later `LowerAref` turns e
 
 # 4. SCCP + CSE
 
-*(TBD)*
+SCCP (`Sparse Conditional Constant Propagation`) is an MLIR “cleanup” pipeline that does two things:
+
+1. **Delete/ignore dead code** on paths that are proven unreachable.
+2. **Propagate constants** by speculatively folding ops whose operands are known constant.
+
+In Triton AWS, this runs after aref insertion / staging so redundant math and loop-bound expressions can be simplified.
+
+Iteration control (overall workflow):
+
+SCCP runs its analyses in a loop until a **fixpoint** is reached: it repeatedly revisits affected ops/edges whenever the analysis discovers new information (e.g., “this SSA value becomes a known constant on live paths” or “this branch is dead”). Once the analysis facts stop changing (worklist empty), SCCP performs the **rewrite** step exactly once to materialize constants and erase trivially-dead ops.
+
+---
+
+## 4.1 Basic mechanism (analysis + rewrite)
+
+SCCP is implemented as:
+
+1. **Dead-code analysis (conditional part).**
+   Using `DeadCodeAnalysis`, SCCP determines which regions/ops are actually live under current control-flow facts (so constants won’t be propagated through dead branches).
+2. **Sparse constant propagation (value part).**
+   `SparseConstantPropagation` maintains a **lattice** per SSA value using `ConstantValue`.
+   Concretely, `ConstantValue` can be in these states:
+   - **Uninitialized**: the analysis hasn’t visited/derived a fact for this SSA value yet (`getUninitialized()`).
+   - **Known constant**: a specific `Attribute` is proven constant for this SSA value.
+   - **Unknown/overdefined**: folding can’t prove a single constant (e.g., conflicting constants across live paths) (`getUnknownConstant()`).
+
+   Lattice join uses this rule: if two different constants meet, it becomes **Unknown/overdefined**; `Uninitialized` acts like “no information yet”.
+3. **Rewrite step.**
+   After the analyses, SCCP replaces SSA uses with materialized constants and erases newly dead ops.
+
+Key idea: SCCP first **decides** (analysis) what’s constant and what’s dead, then **rewrites** IR based on those decisions. It does not “randomly delete” code.
+
+---
+
+## 4.2 `SparseConstantPropagation::visitOperation()` workflow (simulate folding into a lattice)
+
+`SparseConstantPropagation::visitOperation()` is the *value* part of SCCP: for each op that the dataflow solver decides to visit, it tries to answer:
+“If my operands are known constants, can this op’s results be constants too?”
+
+It does this by **simulating** the op via `op->fold(...)` and writing the result into a **lattice** for each SSA result.
+
+### Stage 1 — quick skip for region ops
+
+If the op owns regions (`op->getNumRegions() != 0`), the analysis does not try to fold its results:
+
+- folding could be in-place or depend on internal control flow
+- simulated execution can’t be guaranteed out-of-place
+
+So it sets all results to the lattice “entry/unknown” state:
+
+- `if (op->getNumRegions()) { setAllToEntryStates(results); return success(); }`
+
+### Stage 2 — collect constant operands (lattice → attributes)
+
+For ops with no regions, SCCP reads the lattice of each operand:
+
+- if any operand lattice is still *uninitialized*, it returns early (solver will revisit later)
+- otherwise it builds `constantOperands`
+  - for **known constants**, `getConstantValue()` yields a real `Attribute`
+  - for **unknown/overdefined**, `getConstantValue()` yields a **null** `Attribute`
+    (still “initialized”, just not a proven constant)
+
+Key variable/method:
+
+- `ArrayRef<const Lattice<ConstantValue> *> operands`
+- `SmallVector<Attribute, 8> constantOperands`
+  - `8` is the **inline capacity** (performance hint), not a correctness parameter
+
+### Stage 3 — simulate folding (speculative execution)
+
+It then snapshots the op to protect against speculative in-place folding:
+
+- `originalOperands(op->getOperands())`
+- `originalAttrs = op->getAttrDictionary()`
+
+Then it attempts:
+
+```cpp
+SmallVector<OpFoldResult, 8> foldResults;
+if (failed(op->fold(constantOperands, foldResults)))
+  setAllToEntryStates(results);  // → results are overdefined/unknown
+```
+
+This is where “overdefined / unknown” often comes from in **Stage 3** (on leaf ops with no regions):
+
+1. **Folding fails** because some `constantOperands` entries are null (operand lattice is unknown/overdefined, not a proven constant).
+
+Example of unknonwn op fold failure:
+
+```mlir
+%x = ... : i32        // lattice: unknown/overdefined
+%y = ... : i32        // lattice: unknown/overdefined
+%sum = arith.addi %x, %y : i32
+```
+
+### Stage 4 — detect in-place folding (the “foldResults.empty()” guard)
+
+In MLIR, `op->fold(...)` is allowed to:
+
+- **out-of-place fold**: return computed results in `foldResults`
+- **in-place fold**: mutate the op and return **no** fold results (`foldResults` is empty)
+
+SCCP treats the in-place case conservatively:
+
+```cpp
+if (foldResults.empty()) {
+  op->setOperands(originalOperands);
+  op->setAttrs(originalAttrs);
+  setAllToEntryStates(results); // → overdefined/unknown
+  return success();
+}
+```
+
+Why this implies “overdefined”:
+
+- SCCP only restores operands/attrs, not arbitrary internal mutations
+- so if it can’t represent the fold solely via `foldResults`, the safe assumption is that results are **not provably constant**
+
+### Stage 5 — merge fold results into the lattice
+
+If folding succeeded out-of-place, it merges into lattices:
+
+- if a `foldResult` is an `Attribute`, join lattice with that constant:
+  - `propagateIfChanged(lattice, lattice->join(ConstantValue(attr, op->getDialect())))`
+- otherwise the fold returned another `Value`, so it joins with that value’s lattice element:
+  - `AbstractSparseForwardDataFlowAnalysis::join(lattice, *getLatticeElement(...))`
+
+Key variables:
+
+- `ArrayRef<Lattice<ConstantValue> *> results`
+- `OpFoldResult` → either `Attribute` (constant) or `Value` (alias/another SSA)
+
+**Successful example (Attribute path — full constant fold):**
+
+Before:
+
+```mlir
+%c0 = arith.constant 0 : i32
+%c1 = arith.constant 1 : i32
+%sum = arith.addi %c0, %c1 : i32
+%out = arith.muli %sum, %c1 : i32
+```
+
+On `arith.addi`:
+
+| Step | What happens |
+|------|----------------|
+| Stage 2 | operand lattices: `%c0 → 0`, `%c1 → 1` → `constantOperands = [0, 1]` |
+| Stage 3 | `op->fold(...)` succeeds out-of-place → `foldResults = [i32 1]` |
+| Stage 5 | `%sum` lattice joins to **known constant** `1` (`Attribute` path) |
+
+After SCCP **rewrite** (materialize known constants; erase trivially dead ops). Sketch after folding `%sum` (and possibly `%out` in a later visit):
+
+```mlir
+%c1 = arith.constant 1 : i32
+%out = arith.muli %c1, %c1 : i32
+// or, after further fold of %out:
+// %out = arith.constant 1 : i32
+```
+
+**Successful example (Value path — alias / identity fold):**
+
+Before:
+
+```mlir
+%c0 = arith.constant 0 : i32
+%sum = arith.addi %x, %c0 : i32    // %x lattice is unknown/overdefined
+%out = arith.muli %sum, %y : i32
+```
+
+On `arith.addi`:
+
+| Step | What happens |
+|------|----------------|
+| Stage 2 | `constantOperands = [null, 0]` — `%x` is not a proven constant |
+| Stage 3 | `addi(x, 0) → x` fold returns **Value** `%x`, not an `Attribute` |
+| Stage 5 | `%sum` lattice **joins with `%x`’s lattice** (alias path), not forced to a new constant |
+
+Conceptual IR after that identity fold (what “same as `%x`” means):
+
+```mlir
+%c0 = arith.constant 0 : i32      // may remain or be DCE’d if unused
+%out = arith.muli %x, %y : i32   // uses of %sum → %x; %sum erased if dead
+```
+
+Note: Stage 5 itself only updates lattices. SCCP’s later **rewrite** materializes when the lattice is a known `Attribute`; it does **not** rewrite `%sum` → `%x` just from a Value fold. Identity rewrites like that are usually done by createOrFold / canonicalizer / CSE. In SCCP, the Value path mainly means “`%sum` has the same constant-ness as `%x`” for later users.
+
+So Stage 5 covers both “computed constant” and “same as another SSA value” outcomes.
+
+*(Then SCCP’s rewrite is followed by CSE (`createCSEPass`) to remove any equivalent expressions that become redundant after constants are substituted.)*
 
 ---
 
@@ -751,3 +940,107 @@ Put publishes; get consumes (full IR sketch in §3.1). Later `LowerAref` turns e
 # 9. multiBufferTMADescriptors
 
 *(TBD)*
+
+---
+
+# 10. “Simulate then materialize later” passes in MLIR
+
+What you noticed in SCCP—**simulate in analysis**, then **materialize later** in a rewrite—is a fairly common MLIR pattern.
+
+## 10.1 Is this style popular in MLIR?
+
+Yes. MLIR frequently separates:
+
+1. **Analysis / decision-making**: compute facts (constants, ranges, shapes, legality) *without changing IR semantics*.
+2. **Rewrite / materialization**: apply the chosen simplifications using `OpBuilder` / `PatternRewriter`.
+
+This shows up in multiple places:
+
+- Dataflow-based optimizations: SCCP, constant propagation-like passes.
+- Range/value analyses used to drive canonicalization.
+- Shape/rank/stride analyses feeding targeted rewrites.
+
+The motivation is usually the same:
+
+- Analyses can be iterative and conservative (prove what’s safe).
+- Rewrites should be localized and deterministic (apply only proven-safe changes).
+
+## 10.2 Mechanism: simulate first, then materialize
+
+Think of it as “two-phase optimization”:
+
+### (A) Simulation phase (analysis)
+
+The pass speculatively tries to evaluate what would happen **if** some operand values were constant.
+
+In SCCP, this is:
+
+- Build lattice facts per SSA value.
+- For each op whose operands are known constants, call its dialect folding hook:
+  - `op->fold(constantOperands, foldResults)`
+- Update the lattice with either:
+  - a new constant (if fold succeeded out-of-place), or
+  - “unknown/overdefined” (if fold fails / is unsafe).
+
+Importantly, the simulation phase **does not permanently rewrite** the IR—otherwise the analysis would be order-dependent or incorrect.
+
+That’s why `ConstantPropagationAnalysis.cpp` has a guard for **in-place folds**:
+- if folding mutates the op and produces no explicit `foldResults`, the analysis restores operands/attrs and conservatively marks results as not-constant.
+
+### (B) Materialization phase (rewrite)
+
+After the solver reaches a stable answer (fixpoint), SCCP then:
+
+- replaces uses with materialized constants
+- deletes ops that are now trivially dead
+
+In SCCP’s `SCCP.cpp`, the rewrite happens in `rewrite(solver, ...)`, after `initializeAndRun(...)`.
+
+## 10.3 Example: constant propagation with SCCP (conceptual IR)
+
+### Before
+
+```mlir
+%c0 = arith.constant 0 : i32
+%c1 = arith.constant 1 : i32
+%x  = arith.addi %c0, %c1 : i32
+%y  = arith.muli %x, %c1 : i32
+```
+
+### Simulation phase
+
+SCCP sees `%c0` and `%c1` are constants, calls folding:
+
+- fold(`addi`, [0, 1]) → constant `1`
+- fold(`muli`, [1, 1]) → constant `1`
+
+### Fixpoint answer
+
+Lattices say `%x` and `%y` are constants.
+
+### Materialization phase
+
+SCCP replaces `%x`/`%y` uses with constants and removes trivially dead ops.
+
+## 10.4 How to “support this style” when writing/using passes
+
+If you want to implement your own SCCP-like or simulate→materialize pass pattern in MLIR, the key support points are:
+
+1. **Separate “facts” from “changes”.**
+   - Represent results in analysis data structures (lattices/ranges/booleans).
+   - Only rewrite in the final step.
+2. **Use out-of-place folding, or restore on in-place folding.**
+   - Provide correct `Op::fold(...)` implementations in the dialect so analyses can ask:
+     “given constant operands, can you compute a constant result?”
+   - If a fold can be in-place, analyses like SCCP must defensively guard and restore.
+3. **Materialize using a builder/folder.**
+   - In the rewrite phase, use the dialect folder / constant materialization to create the real IR constants.
+4. **Keep rewrites small and local.**
+   - Replace specific uses; then rely on canonicalization/CSE for broader cleanup.
+
+For SCCP specifically, the “support” is already built into MLIR’s dataflow + fold interface:
+- `SCCP.cpp` runs analysis to fixpoint
+- `ConstantPropagationAnalysis.cpp` uses `op->fold(...)` for simulation
+- `rewrite(...)` applies replacements and deletes dead ops
+
+If the user wants, the next step is to point out another MLIR pass in Triton that follows the same pattern (analysis → rewrite), but SCCP is the clearest example.
