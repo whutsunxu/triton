@@ -6,7 +6,7 @@ Companion notes for `_p_matmul_…_64x256x128x1`.
 |--|--|
 | **Pipeline** | `AutomaticWarpSpecialization` (`AutomaticWarpSpecialization.cpp`) |
 | **IR spine** | `input_ir.ttir` → … → `stage_cluster.ttir` → `after_partition_scheduling.ttir` → … |
-| **This doc** | AWS parts **§2–§10** (after PartitionScheduling) |
+| **This doc** | AWS parts **§2–§11** (after PartitionScheduling) |
 | **Sibling** | `WarpSpecialization_PartitionScheduling.md` — §1 PartitionScheduling |
 
 **AWS order (high level):**
@@ -15,12 +15,13 @@ Companion notes for `_p_matmul_…_64x256x128x1`.
 1 PartitionScheduling          ← see sibling doc
 2 NVWSHoistTmemStore           ← this file starts here
 3 NVWSInsertAref / InsertTmemAref
-4 SCCP + CSE
-5 NVWSLowerAref
-6 PartitionLoops          ← physical per-partition scf.for clones
-7 NVWSLowerWarpGroup
-8 ScheduleLoops
-9 multiBufferTMADescriptors
+4 SCCP
+5 CSE
+6 NVWSLowerAref
+7 PartitionLoops          ← physical per-partition scf.for clones
+8 NVWSLowerWarpGroup
+9 ScheduleLoops
+10 multiBufferTMADescriptors
 ```
 
 ---
@@ -332,7 +333,7 @@ Put publishes; get consumes (full IR sketch in §3.1). Later `LowerAref` turns e
 
 ---
 
-# 4. SCCP + CSE
+# 4. SCCP
 
 SCCP (`Sparse Conditional Constant Propagation`) is an MLIR “cleanup” pipeline that does two things:
 
@@ -523,45 +524,288 @@ Note: Stage 5 itself only updates lattices. SCCP’s later **rewrite** materiali
 
 So Stage 5 covers both “computed constant” and “same as another SSA value” outcomes.
 
-*(Then SCCP’s rewrite is followed by CSE (`createCSEPass`) to remove any equivalent expressions that become redundant after constants are substituted.)*
+*(After SCCP, AWS runs CSE — see §5.)*
 
 ---
 
-# 5. NVWSLowerAref
+# 5. CSE (`mlir/lib/Transforms/CSE.cpp`)
+
+| | |
+|--|--|
+| **Pass** | MLIR `cse` (`CSEPass` / `createCSEPass()`) |
+| **When** | right after SCCP in AWS |
+| **Role** | remove duplicate equivalent ops created/exposed by SCCP and earlier passes |
+
+## 5.1 General idea — equivalence **and** dominance
+
+CSE = **Common Subexpression Elimination**.
+
+If two ops compute the **same expression** and the earlier result is **available** at the later site, CSE:
+
+1. redirects uses of the later op to the earlier one
+2. erases the duplicate
+
+CSE needs **both** checks — neither alone is enough:
+
+| Check | What it answers |
+|--------|------------------|
+| **Equivalence** (`OperationEquivalence`) | Same opcode, operands, attrs? → “same computation” |
+| **Dominance** (`DominanceInfo` + scoped known-map) | Is the earlier SSA result **available** here? → “safe to reuse” |
+
+### Dominance (brief)
+
+**A dominates B** if **every control-flow path** from the region **entry** to **B** goes through **A**.
+
+- “Path” = CFG route through blocks/branches — **not** SSA operands.
+- An SSA **def** (e.g. `%a = …`) that dominates a **use** is always defined before that use on every path, so the value is legally readable there.
+
+Dominance alone does **not** mean two ops are interchangeable. It only says: if they *are* the same expression, the earlier result can replace the later one.
+
+Tiny example:
+
+```mlir
+%a = arith.addi %x, %c1 : i32
+%b = arith.addi %x, %c1 : i32   // equivalent to %a, and %a dominates %b
+%y = arith.muli %a, %b : i32
+```
+
+- Equivalence: both `addi %x, %c1`
+- Dominance: `%a` is above `%b` on the only path → available
+- CSE: uses of `%b` → `%a`, erase `%b`
+
+## 5.2 Main workflow (`CSE::runOnOperation`)
+
+```cpp
+void CSE::runOnOperation() {
+  IRRewriter rewriter(&getContext());
+  CSEDriver driver(rewriter, &getAnalysis<DominanceInfo>());
+  bool changed = false;
+  driver.simplify(getOperation(), &changed);
+
+  numCSE = driver.getNumCSE();
+  numDCE = driver.getNumDCE();
+
+  if (!changed)
+    return markAllAnalysesPreserved();
+
+  // CSE doesn't remove region ops in a CFG-breaking way → dominance still OK
+  markAnalysesPreserved<DominanceInfo, PostDominanceInfo>();
+}
+```
+
+| Step | What |
+|------|------|
+| **1. DominanceInfo** | analysis of which defs/blocks dominate which uses |
+| **2. `simplify(...)`** | walk regions; find duplicates; replace uses; queue erases |
+| **3. Stats** | `numCSE` = ops CSE’d; `numDCE` = trivially dead ops erased |
+| **4. Preserve analyses** | if IR unchanged → preserve **all**; if changed → still preserve dominance (see below) |
+
+Unlike SCCP, CSE **rewrites immediately** during the walk (no separate lattice fixpoint → materialize phase).
+
+## 5.3 Details of `simplify`
+
+`CSEDriver::simplify(op, &changed)`:
+
+```cpp
+ScopedMapTy knownValues;          // scoped hash table: equivalent-op → first def
+for (auto &region : op->getRegions())
+  simplifyRegion(knownValues, region);
+
+for (auto *dead : opsToErase)
+  rewriter.eraseOp(dead);
+*changed = !opsToErase.empty();
+```
+
+### Region / block walk
+
+- Prefer **dominance-tree** order for multi-block regions with SSA dominance.
+- Push a **scope** on the known-map when entering a dominated block; pop when leaving.
+- So known ops from **dominating** blocks are visible; sibling blocks don’t share each other’s locals incorrectly.
+
+### Per op (`simplifyOperation`)
+
+| Case | Action |
+|------|--------|
+| Terminator | skip |
+| Trivially dead | queue erase (`numDCE++`) |
+| Multi-block regions (complex) | skip (conservative) |
+| Memory-effect free | if equivalent op already in map → `replaceUsesAndDelete`; else `insert(op, op)` |
+| Only `Read` effects | CSE only if same block and no conflicting write between the two |
+| Other side effects | don’t CSE |
+
+#### What `isMemoryEffectFree(op)` means
+
+MLIR helper (`SideEffectInterfaces.cpp`): **does this op (and nested ops if recursive) have no memory side effects?**
+
+- **Memory-effect free** ≈ pure SSA compute — no read/write/alloc/free of memory.
+  - Typical **yes**: `arith.addi`, `arith.muli`, `arith.constant`, …
+  - Typical **no**: `memref.load`/`store`, `tt.load`/`store`, TMA/`descriptor_load`, …
+- Decision sketch:
+  - Implements `MemoryEffectOpInterface` and `hasNoEffect()` → free (then check nested if `HasRecursiveMemoryEffects`).
+  - No interface and no recursive trait → **not** free (unknown → conservative).
+  - Regions with recursive effects → free only if **all** nested ops are free.
+
+Why CSE splits cases on this:
+
+- **Free** → duplicates are interchangeable (same inputs ⇒ same result); only need equivalence + dominance.
+- **Not free** → two “same-looking” ops may observe different memory state at different program points, so CSE is restricted (e.g. only simple same-block reads with no conflicting write in between).
+
+#### How `knownValues` identifies and replaces a common op
+
+`knownValues` is a **`ScopedHashTable<Operation*, Operation*>`** keyed by **operation shape**, not by SSA value id:
+
+```cpp
+using ScopedMapTy = llvm::ScopedHashTable<Operation *, Operation *,
+                                          SimpleOperationInfo, AllocatorTy>;
+// conceptually:  "expression fingerprint" → first Operation* that computed it
+```
+
+**Key = the current op pointer used as a lookup probe; Value = the earlier “keeper” op to reuse.**
+
+##### 1) How “same expression” is hashed / compared
+
+`SimpleOperationInfo` plugs into the hash table:
+
+```cpp
+getHashValue(op)  → OperationEquivalence::computeHash(
+                      op, hashOperands, /*ignore results*/, IgnoreLocations)
+isEqual(a, b)     → OperationEquivalence::isEquivalentTo(a, b, IgnoreLocations)
+```
+
+So two different `Operation*` collide as “the same key” when they have:
+
+- same opcode / traits relevant to equivalence
+- same operands (same SSA values)
+- same attributes
+- **locations ignored**; **result SSA names ignored** (results aren’t part of the hash)
+
+Example: `%a = addi %x, %c1` and `%b = addi %x, %c1` hash/compare equal even though `%a ≠ %b`.
+
+##### 2) Identify: `lookup` then `insert`
+
+For a memory-effect-free op (core path):
+
+```cpp
+if (auto *existing = knownValues.lookup(op)) {
+  replaceUsesAndDelete(knownValues, op, existing, hasSSADominance);
+  return success();   // this op is a duplicate
+}
+knownValues.insert(op, op);   // first time we see this expression → become the keeper
+```
+
+Walkthrough on one block:
+
+```mlir
+%c1 = arith.constant 1 : i32
+%a  = arith.addi %x, %c1 : i32
+%b  = arith.addi %x, %c1 : i32
+%y  = arith.muli %a, %b : i32
+```
+
+| Visit | `lookup` | Map after step |
+|-------|----------|----------------|
+| `%c1 = constant 1` | miss | `{ constant(1) → %c1_op }` |
+| `%a = addi %x, %c1` | miss | `… + { addi(%x,%c1) → %a_op }` |
+| `%b = addi %x, %c1` | **hit** → `%a_op` | unchanged; CSE `%b` |
+| `%y = muli %a, %b` | (after replace, operands may already be `%a,%a`) | insert or CSE further |
+
+Because the table is **scoped** with the dominance walk: when you leave a dominated block, that block’s inserts are popped. Sibling blocks don’t see each other’s local keepers — only ancestors’ (dominating) expressions stay visible.
+
+##### 3) Replace: `replaceUsesAndDelete(op, existing)`
+
+On a hit, `op` is the duplicate, `existing` is the keeper:
+
+```cpp
+// With SSA dominance (common case):
+rewriter.replaceAllUsesWith(op->getResults(), existing->getResults());
+opsToErase.push_back(op);   // erase later, after the walk
+++numCSE;
+```
+
+So every use of `%b` becomes a use of `%a`; `%b`’s op is queued for erase. IR conceptually becomes:
+
+```mlir
+%c1 = arith.constant 1 : i32
+%a  = arith.addi %x, %c1 : i32
+%y  = arith.muli %a, %a : i32
+```
+
+Without full SSA dominance, CSE only replaces uses whose owning ops were **not yet visited** (`replaceUsesWithIf`), and erases only if the duplicate ends up use-empty — avoids rewriting ops already processed.
+
+**One-liner:** `knownValues` is a dominance-scoped dictionary from “expression shape” → first op; `lookup` finds a common subexpression; `replaceUsesAndDelete` rewires SSA uses to that first op and deletes the duplicate.
+
+### Example after SCCP (same story, end IR)
+
+Before CSE:
+
+```mlir
+%c1 = arith.constant 1 : i32
+%a  = arith.addi %x, %c1 : i32
+%b  = arith.addi %x, %c1 : i32
+%y  = arith.muli %a, %b : i32
+```
+
+After CSE:
+
+```mlir
+%c1 = arith.constant 1 : i32
+%a  = arith.addi %x, %c1 : i32
+%y  = arith.muli %a, %a : i32
+```
+
+## 5.4 `markAllAnalysesPreserved` / dominance preserve
+
+Pass-manager bookkeeping after CSE:
+
+1. **`if (!changed) markAllAnalysesPreserved()`**
+   IR identical → every cached analysis (dominance, etc.) is still valid; don’t recompute.
+
+2. **`if (changed) markAnalysesPreserved<DominanceInfo, PostDominanceInfo>()`**
+   IR did change (use redirects / erases), so most analyses are stale — **but** CSE currently doesn’t remove region/control ops in a way that invalidates the CFG dominance tree, so dominance analyses can be reused by later passes.
+
+That comment in `CSE.cpp`:
+
+```cpp
+// We currently don't remove region operations, so mark dominance as preserved.
+```
+
+---
+
+# 6. NVWSLowerAref
 
 *(TBD)*
 
 ---
 
-# 6. PartitionLoops
+# 7. PartitionLoops
 
 *(TBD — `cloneForOp`: one `scf.for` per partition region; shared control with multi-`ttg.partition` is cloned into each)*
 
 ---
 
-# 7. NVWSLowerWarpGroup
+# 8. NVWSLowerWarpGroup
 
 *(TBD)*
 
 ---
 
-# 8. ScheduleLoops
+# 9. ScheduleLoops
 
 *(See `description_stage_cluster.md` for the coarse SWP schedule; ordering vs AWS may differ by dump recipe.)*
 
 ---
 
-# 9. multiBufferTMADescriptors
+# 10. multiBufferTMADescriptors
 
 *(TBD)*
 
 ---
 
-# 10. “Simulate then materialize later” passes in MLIR
+# 11. “Simulate then materialize later” passes in MLIR
 
 What you noticed in SCCP—**simulate in analysis**, then **materialize later** in a rewrite—is a fairly common MLIR pattern.
 
-## 10.1 Is this style popular in MLIR?
+## 11.1 Is this style popular in MLIR?
 
 Yes. MLIR frequently separates:
 
@@ -579,7 +823,7 @@ The motivation is usually the same:
 - Analyses can be iterative and conservative (prove what’s safe).
 - Rewrites should be localized and deterministic (apply only proven-safe changes).
 
-## 10.2 Mechanism: simulate first, then materialize
+## 11.2 Mechanism: simulate first, then materialize
 
 Think of it as “two-phase optimization”:
 
@@ -610,7 +854,7 @@ After the solver reaches a stable answer (fixpoint), SCCP then:
 
 In SCCP’s `SCCP.cpp`, the rewrite happens in `rewrite(solver, ...)`, after `initializeAndRun(...)`.
 
-## 10.3 Example: constant propagation with SCCP (conceptual IR)
+## 11.3 Example: constant propagation with SCCP (conceptual IR)
 
 ### Before
 
@@ -636,7 +880,7 @@ Lattices say `%x` and `%y` are constants.
 
 SCCP replaces `%x`/`%y` uses with constants and removes trivially dead ops.
 
-## 10.4 How to “support this style” when writing/using passes
+## 11.4 How to “support this style” when writing/using passes
 
 If you want to implement your own SCCP-like or simulate→materialize pass pattern in MLIR, the key support points are:
 

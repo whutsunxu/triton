@@ -7,7 +7,7 @@ Companion notes for `_p_matmul_…_64x256x128x1`.
 | **Pipeline** | `AutomaticWarpSpecialization` (`AutomaticWarpSpecialization.cpp`) |
 | **IR spine** | `input_ir.ttir` → … → `stage_cluster.ttir` → `after_partition_scheduling.ttir` → … |
 | **This doc** | **§1 = PartitionScheduling** |
-| **Sibling** | `WarpSpecialization_Rest.md` — AWS parts 2–10 (HoistTmemStore → …) |
+| **Sibling** | `WarpSpecialization_Rest.md` — AWS parts 2–11 (HoistTmemStore → …) |
 
 **AWS order (high level):**
 
@@ -15,12 +15,13 @@ Companion notes for `_p_matmul_…_64x256x128x1`.
 1 PartitionScheduling          ← this file
 2 NVWSHoistTmemStore
 3 NVWSInsertAref / InsertTmemAref
-4 SCCP + CSE
-5 NVWSLowerAref
-6 PartitionLoops          ← physical per-partition scf.for clones
-7 NVWSLowerWarpGroup
-8 ScheduleLoops
-9 multiBufferTMADescriptors
+4 SCCP
+5 CSE
+6 NVWSLowerAref
+7 PartitionLoops          ← physical per-partition scf.for clones
+8 NVWSLowerWarpGroup
+9 ScheduleLoops
+10 multiBufferTMADescriptors
 ```
 
 ---
