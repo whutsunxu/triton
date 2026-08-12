@@ -36,9 +36,9 @@ OutIR=/Volumes/case_sensitive_workspace/triton/workspace/after_schedule_loops.tt
 OutLog=/Volumes/case_sensitive_workspace/triton/workspace/schedule_loops_debug.log
 
 "$TRITON_OPT" "$SourceFile" \
-  --debug-only=triton-loop-pipeline \
   -tritongpu-assign-latencies=num-stages=3 \
   -tritongpu-schedule-loops \
+  -tritongpu-automatic-warp-specialization=num-stages=3 \
   -o "$OutIR" \
   >"$OutLog" 2>&1
 

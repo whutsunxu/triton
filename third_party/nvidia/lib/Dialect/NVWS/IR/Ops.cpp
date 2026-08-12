@@ -204,6 +204,14 @@ ParseResult WarpGroupOp::parse(OpAsmParser &p, OperationState &result) {
   result.addAttribute(getNumWarpsAttrName(result.name),
                       p.getBuilder().getDenseI32ArrayAttr(partitionNumWarps));
 
+  // Result types are required for round-tripping SSA names like `%0:N =`.
+  if (succeeded(p.parseOptionalColon())) {
+    SmallVector<Type> resultTypes;
+    if (p.parseTypeList(resultTypes))
+      return failure();
+    result.addTypes(resultTypes);
+  }
+
   return success();
 }
 
@@ -217,6 +225,10 @@ void WarpGroupOp::print(OpAsmPrinter &p) {
     p << "partition" << i;
     p << " num_warps(" << numWarps << ") ";
     p.printRegion(region, /*printEntryBlockArgs=*/false);
+  }
+  if (!getResultTypes().empty()) {
+    p << " : ";
+    llvm::interleaveComma(getResultTypes(), p);
   }
 }
 
