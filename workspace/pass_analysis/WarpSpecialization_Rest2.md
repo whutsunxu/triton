@@ -40,7 +40,7 @@ Companion notes for `_p_matmul_…_64x256x128x1`.
 1. collect WS fors (+ nested fors) → combineArefs(loop)   ← §6.1–6.2
 2. multiBufferAref (producer-load arefs)                  ← §6.3
 3. NVWSAssignStagePhase                                   ← §6.4
-4. pattern-rewrite LowerArefCreate → mbarriers / waits / …
+4. pattern-rewrite LowerArefCreate → mbarriers / waits / …  ← §6.5
 ```
 
 ## 6.1 General idea — same dominant consumer **and** same partition
@@ -351,17 +351,92 @@ scf.for %i = ... iter_args(%s_put = %c2, %p_put = %c0,
 
 This matmul (`03-after-lower-aref.ttir`) still shows that wrap after `LowerArefCreate`, now feeding `wait_barrier`. A and B were **not** combined (separate `local_load`s before `tt.dot`), so **four** cursors: put A `(2,0)`, get A `(2,1)`, put B `(2,0)`, get B `(2,1)`.
 
-```mlir
-%71 = arith.addi %arg55, %c1      // put A: 2+1
-%72 = arith.cmpi eq, %71, %c3     // wrap?
-%73 = arith.select %72, %c0, %71  // stage
-%75 = arith.select %72, xor(%arg56,1), %arg56  // phase
-ttng.wait_barrier %empty[%73], %75
-%77 = ttg.memdesc_index %bufA[%73]
+**One-liner:** `stage` is the circular-buffer index; SSA `phase` is the wait parity (put↔empty, get↔full); hardware empty/full all start at 0; first put P=1 is only so the first wait on an unused empty does not deadlock.
+
+## 6.5 `LowerArefCreate` — enter/exit → wait / expect / TMA / arrive
+
+Nested inside `NVWSLowerAref` **after** AssignStagePhase: greedy `OpRewritePattern<ArefCreateOp>`. AssignStagePhase only **fills** `[stage, phase]`; this pattern **erases** `aref.create` / put / get and materializes mbarriers.
+
+### 6.5.1 Mechanism
+
+Per `aref.create`, allocate two mbarrier arrays of length `depth` (**empty**, **full**), `init_barrier` every slot (HW phase = 0). Then rewrite each user using the stage/phase already on the op:
+
+```text
+put.enter [%s,%p]  →  wait empty[s], p ; memdesc_index buf[s]
+put  + TMA         →  barrier_expect full[s], txBytes ; async_tma_copy …, full[s]
+put.exit  [%s]     →  TMA HW arrive on full (no arrive_barrier for tma_load)
+get.enter [%s,%p]  →  wait full[s], p ; memdesc_index buf[s]
+get.exit  [%s]     →  arrive empty[s]  (+ fence if producer was TMA and consumer is NONE)
 ```
 
+`descriptor_load` is on the **put** side. Combined arefs still share **one** empty/full pair; `getSubViews` indexes **all** buffers with the same `%s`.
 
-**One-liner:** `stage` is the circular-buffer index; SSA `phase` is the wait parity (put↔empty, get↔full); hardware empty/full all start at 0; first put P=1 is only so the first wait on an unused empty does not deadlock.
+`barrier_expect` is **not** a toggle. It is `mbarrier.arrive.expect_tx`: arm full with pending TMA bytes. The full parity flips when those bytes land. Expect **before** the copy is required; wait-empty **before** expect is what makes overwrite safe.
+
+### 6.5.2 Primitives
+
+| before (after §6.4) | after this pattern | HW effect |
+|--|--|--|
+| `put.enter %aref[%s,%p]` | `wait_barrier empty[%s], %p` | observe **empty** |
+| `descriptor_load … %buf` | `memdesc_index buf[%s]` + `barrier_expect full[%s], N` + `async_tma_copy …, full[%s]` | arm then complete **full** |
+| `put.exit %aref[%s], %tok [#tma_load]` | (nothing extra; TMA already arrives) | **full** toggles on copy done |
+| `get.enter %aref[%s,%p]` | `wait_barrier full[%s], %p` | observe **full** |
+| `local_load` / `dot` | same, on the indexed view | — |
+| `get.exit %aref[%s], %tok [#none]` | `fence_async_shared` + `arrive_barrier empty[%s], 1` | **empty** toggles |
+
+Software `%s` / `%p` stay SSA (`addi` / `xori` / `select`). Empty/full **parity** is not SSA — it lives in the `memdesc<1xi64>` object.
+
+### 6.5.3 Workflow (`matchAndRewrite`)
+
+```cpp
+arefVal = createAndInitMbar(aref.create);   // empty[depth], full[depth], init each
+for (user : aref.create.users()) {
+  put.enter  → rewritePutEnterOp   // wait empty; TMA expect+copy on full
+  get.enter  → rewriteGetEnterOp   // wait full; replace buffers with views
+  put.exit   → rewritePutExitOp    // arrive full if not TMA
+  get.exit   → rewriteGetExitOp    // arrive empty
+  aref.buffer → memdesc_index only
+}
+// erase create + enter/exit; leftover tokens → ub.poison (hoisted later)
+```
+
+### IR — before (after AssignStagePhase)
+
+```mlir
+%b, %tok = nvws.aref.put.enter %aref[%sp, %pp] {ttg.partition = array<i32: 1>}
+nvws.descriptor_load ... %b ... 8192
+nvws.aref.put.exit %aref[%sp], %tok [#nvws.async_op<tma_load>] ...
+
+%r, %tg = nvws.aref.get.enter %aref[%sg, %pg] {ttg.partition = array<i32: 0>}
+%ld = ttg.local_load %r ...
+nvws.aref.get.exit %aref[%sg], %tg [#nvws.async_op<none>] ...
+```
+
+### IR — after (`03-after-lower-aref.ttir`, A-tile put then get)
+
+Put (partition 1) — wait **empty** `%21`, expect+TMA on **full** `%25`:
+
+```mlir
+ttng.wait_barrier %76, %75                          // empty[%73], put phase
+%77 = ttg.memdesc_index %20[%73]                    // bufA[stage]
+%78 = ttg.memdesc_index %25[%73]                    // full[stage]
+ttng.barrier_expect %78, 8192, %true                // arm full (not a toggle)
+ttng.async_tma_copy_global_to_local ... %77, %78    // HW arrive on full
+```
+
+Get (partition 0) — wait **full**, load, arrive **empty**:
+
+```mlir
+ttng.wait_barrier %92, %91                          // full[%89], get phase
+%93 = ttg.memdesc_index %20[%89]
+%ld = ttg.local_load %93
+ttng.fence_async_shared {bCluster = false}
+ttng.arrive_barrier %95, 1                          // empty[%89]
+```
+
+B-tile is the same pattern on its own empty/full (`%30` / `%34`) and wrap vs `%c3`.
+
+**One-liner:** `LowerArefCreate` turns annotated put/get into wait-empty + expect/TMA-full (producer) and wait-full + arrive-empty (consumer); `barrier_expect` arms full, TMA toggles it.
 
 ---
 
