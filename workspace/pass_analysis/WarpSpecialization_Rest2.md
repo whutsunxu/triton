@@ -440,9 +440,140 @@ B-tile is the same pattern on its own empty/full (`%30` / `%34`) and wrap vs `%c
 
 ---
 
-# 7. PartitionLoops
+# 7. PartitionLoops (`PartitionLoops.cpp`)
 
-*(TBD — `cloneForOp`: one `scf.for` per partition region; shared control with multi-`ttg.partition` is cloned into each)*
+| | |
+|--|--|
+| **Pass** | `triton-gpu-partition-loops` (`TritonGPUPartitionLoops`) |
+| **When** | after `NVWSLowerAref` in AWS (`createTritonGPUPartitionLoops`) |
+| **Role** | turn one tagged `scf.for` into `nvws.warp_group` with **one physical `scf.for` per partition region** |
+| **IR** | `03-after-lower-aref.ttir` → `04-after-partition-loops.ttir` |
+
+Until here the WS loop is still **one** region. Ops are only *labeled* `ttg.partition = [0]`, `[1]`, or `[0,1]`. After this pass they live in **separate warp-group regions** and no longer share SSA.
+
+## 7.1 Mechanism — clone the for, do not share registers across warps
+
+Aref already replaced cross-partition **data** edges (TMA → `local_load`) with smem + mbarriers. What remains in one `scf.for` is:
+
+- p1 ops: wait-empty, TMA, expect/full
+- p0 ops: wait-full, `local_load`, `convert_layout`, `dot`, store
+- both: index arith tagged `[0,1]`
+
+To better assign the partitions onto warpgroups, We split the for-loop's SSAs into warp-specialized for-loop. In such situation, existing SSA from p1 to p0 would dangle. So `partitionLoop`:
+
+1. **Refuse** leftover register edges between distinct partitions (`iterateUses`).
+2. **Classify** the original iter_args from partition **0** (the only region that can `warp_group.yield` SSA).
+3. **Clone** one `scf.for` into each `nvws.warp_group` region, keeping only that partition’s iter_args / ops.
+4. **Rewire** uses of the old for that sit **after** the loop (no `ttg.partition` = “root”).
+
+`nvws.warp_group` results **are** partition 0’s yielded values. Other regions only `warp_group.return`. A tensor computed only in p1 that is still used after the loop cannot come out as SSA — it would go through a smem `local_alloc` / store / load. This matmul does not need that path.
+
+## 7.2 Workflow (`partitionLoop`)
+
+`PartitionSet::fromLoop` reads `ttg.partition.stages` and each op’s `ttg.partition`. Then the four jobs from §7.1:
+
+### (1) Refuse leftover register edges
+
+For each partition, `iterateUses(loop, callback)` walks that partition’s SSA **outputs**: uses in another partition this trip, or uses in a **future** trip via `scf.yield` → iter_arg.
+
+The callback is `(output, use, distance)`:
+
+- `output` — the `OpResult` this partition produced
+- `use` — the consuming operand (`use.get()` **is** `output` when `distance == 0`; after a yield it is the iter_arg)
+- `distance` — how many future trips (`0` = same iter)
+
+Skip if the user is also tagged with this partition (including `A(i) → A(i+1)`). Skip if every consumer partition id is already on the producer (`consumer ⊆ producer`): after clone, that region still has a copy of the def. Anything else is a dangling register edge — warn `"non-root partition #P has direct SSA consumer"` and fail.
+
+That is the pre-aref `descriptor_load {p1}` → `dot {p0}` edge. After LowerAref, p1 and p0 only share smem/barriers, so this check passes.
+
+### (2) Classify iter_args from partition 0
+
+`nvws.warp_group` SSA results come only from p0’s `warp_group.yield`. So classification is vs **partition 0**, using `ttg.partition.outputs` on the **for** (not on post-loop ops like `%51`):
+
+| category | when | what happens |
+|--|--|--|
+| `Used` | `0 ∈ outputs[i]` | keep this iter_arg on p0’s cloned for; it can be yielded out of `warp_group` |
+| `TensorResultFromOtherPartition` | `0 ∉ outputs[i]`, yielded value is a **tensor** computed by another partition, **and** `%38#i` still has uses after the for | `local_alloc` a smem buffer in front of `warp_group` |
+| `Unused` | otherwise | drop from p0 (p1-only i32s; tensors nobody uses after the loop) |
+
+`getLoopVarIndicesToKeep` keeps only `Used`. Those types become `WarpGroupOp` result types. The smem alloc is empty on this matmul (see IR below).
+
+### (3) Clone one `scf.for` per warp-group region
+
+Create `nvws.warp_group` with `numPartitions` regions (`num_warps` each from the module). Walk the **containing block** (func body): skip unlabeled ops (allocs, `init_barrier`, post-loop bitcast); for the tagged for, `cloneForOp`.
+
+`cloneForOp` builds one `scf.for` in each region whose id is on the original for (`[0, 1]` here). Each clone keeps only iter_args whose `partition.outputs` contain **that** id, then `cloneOpsInBlock`:
+
+- `ttg.partition = [0]` → only p0 (wait-full, `local_load`, `dot`, store)
+- `[1]` → only p1 (wait-empty, TMA)
+- `[0,1]` → **both** (e.g. k-counter `%arg46`)
+
+Close each region:
+
+- **p0:** `warp_group.yield` the cloned for’s results. Those **are** `%38#k` after the op.
+- **p1+:** if this partition computed a `TensorResultFromOtherPartition` tensor, `local_store` it into the buffer from (2); then `warp_group.return` (no SSA). This matmul: no store, just `return`. p1’s TMA cursors die in-region; A/B tiles already moved through barriers inside the body.
+
+### (4) Rewire uses of the old for (root)
+
+The original `%38:17` still exists. For each result that still has users:
+
+- `TensorResultFromOtherPartition` → `local_load` from the buffer in (2), replace uses, `local_dealloc`. Not taken here.
+- else if some user has **no** `ttg.partition` (code after the WS loop = “root”) or is another WS for → replace with `wgOp.getResult(newResultIndices[i])`.
+
+Then erase the original for. `%51 = tt.bitcast %38#3` is root: index 3 maps to warp-group result 3, so the bitcast keeps using `%38#3` even though `%38` is now the warp-group.
+
+### IR — before (`03-after-lower-aref.ttir`)
+
+One for, 17 iter_args, still `ttg.partition` on every body op:
+
+```mlir
+%38:17 = scf.for %arg45 = %c0 to %ub step %c1
+    iter_args(%arg46, %arg47, %arg48, %arg49, %arg50, %arg51, ... %arg62)
+    -> (i32, i32, i32, tensor<128xi32>, i32, tensor<64x256xf32, #mma>, i32, ...)
+{
+  // p1: wait empty, TMA A/B
+  // p0: wait full, local_load, cvt, tt.dot %arg51, store
+  scf.yield %114, %69#3, %111#0, %111#1, %108, %110, ...
+} { ttg.partition = array<i32: 0, 1>,
+    ttg.partition.outputs = [
+      [0,1], [0,1], [0], [0], [1], [0], [0,1], [0,1],
+      [1], [1], [1], [0], [0], [1], [1], [0], [0]
+    ] }
+
+%51 = tt.bitcast %38#3 : tensor<128xi32, ...> -> tensor<128xf32, ...>   // root, no partition
+```
+
+Index **3** (`%arg49` / `%38#3`, amax tensor) is `outputs = [0]` — computed in p0, used after the loop. Index **5** (`%arg51` acc) is also `[0]` but **`%38#5` has no uses** after the for. p1-only slots are i32 (k-index, put stage/phase) → `Unused` for p0, not smem-export.
+
+p0 keeps indices `0,1,2,3,5,6,7,11,12,15,16` (11). p1 keeps the 10 whose outputs contain `1`.
+
+### IR — after (`04-after-partition-loops.ttir`)
+
+```mlir
+%38:11 = nvws.warp_group
+partition0 num_warps(4) {
+  %67:11 = scf.for ... iter_args(/* 11: counters, amax, acc, get stage/phase */)
+  {
+    // wait full, local_load, cvt, tt.dot, store  — no TMA
+    scf.yield ...
+  }
+  nvws.warp_group.yield %67#0, ... %67#3, %67#4, ...   // #3 = amax tensor
+}
+partition1 num_warps(4) {
+  %67:10 = scf.for ... iter_args(/* 10 i32s: counters, TMA coords, put stage/phase */)
+  {
+    // wait empty, expect, async_tma_copy A/B  — no dot
+    scf.yield ...
+  }
+  nvws.warp_group.return
+} : i32, i32, i32, tensor<128xi32, ...>, tensor<64x256xf32, #mma>, ...
+
+%51 = tt.bitcast %38#3 : tensor<128xi32, ...> -> tensor<128xf32, ...>
+```
+
+`%38` is now the warp-group, not the for. `%51` still uses `%38#3` because `newResultIndices[3] = 3` (p0 kept the amax as its 4th result). No extra `local_alloc` in front of `warp_group`.
+
+**One-liner:** `PartitionLoops` splits the tagged for into per-warp-group clones; p0 `yield`s SSA (here the amax `%38#3`); p1 `return`s; leftover cross-partition SSA is illegal because warp groups do not share registers.
 
 ---
 
