@@ -666,7 +666,7 @@ Root `%51` still reads `%38#3`; the hop is now `scf.for → warp_yield → %38`,
 | **When** | after `NVWSLowerWarpGroup` in AWS (`createTritonGPUScheduleLoops`) |
 | **Role** | rewrite stale `loop.stage` / `loop.cluster` on each **partitioned** `scf.for` |
 | **IR** | `05-after-lower-warp-group.ttir` → `06-after-schedule-loops.ttir` |
-| **Also see** | `description_stage_cluster.md` for the full non-WS coarse SWP recipe |
+| **Also see** | `Assign_latency_And_Schedule_loop_stage_cluster.md` for the full non-WS coarse SWP recipe |
 
 Ops and control flow are unchanged; only schedule attrs are rewritten. Overlap of TMA vs compute is already **warp concurrency**; each for no longer needs the old multi-stage SWP numbering from the combined loop.
 
@@ -769,104 +769,62 @@ partition0(... %arg52: !tt.tensordesc<...>, %arg56: !tt.tensordesc<...>, ...) {
 
 ---
 
-# 11. “Simulate then materialize later” passes in MLIR
+# 11. AWS end-to-end summary (PartitionScheduling → Rest1 → Rest2)
 
-What you noticed in SCCP—**simulate in analysis**, then **materialize later** in a rewrite—is a fairly common MLIR pattern.
+Cross-doc map for `_p_matmul_…_64x256x128x1`:
 
-## 11.1 Is this style popular in MLIR?
+| Doc | §§ |
+|--|--|
+| `WarpSpecialization_PartitionScheduling.md` | §1 PartitionScheduling |
+| `WarpSpecialization_Rest1.md` | §2–§5 HoistTmemStore → CSE |
+| `WarpSpecialization_Rest2.md` | §6–§10 LowerAref → multiBufferTMADescriptors |
 
-Yes. MLIR frequently separates:
+**IR dumps (subpasses):** `01-after-partition-scheduling` → `02-after-insert-tmem-aref` → `03-after-lower-aref` → `04-after-partition-loops` → `05-after-lower-warp-group` → `06-after-schedule-loops`.
 
-1. **Analysis / decision-making**: compute facts (constants, ranges, shapes, legality) *without changing IR semantics*.
-2. **Rewrite / materialization**: apply the chosen simplifications using `OpBuilder` / `PatternRewriter`.
+## 11.1 Logic chain (why each pass exists)
 
-This shows up in multiple places:
-
-- Dataflow-based optimizations: SCCP, constant propagation-like passes.
-- Range/value analyses used to drive canonicalization.
-- Shape/rank/stride analyses feeding targeted rewrites.
-
-The motivation is usually the same:
-
-- Analyses can be iterative and conservative (prove what’s safe).
-- Rewrites should be localized and deterministic (apply only proven-safe changes).
-
-## 11.2 Mechanism: simulate first, then materialize
-
-Think of it as “two-phase optimization”:
-
-### (A) Simulation phase (analysis)
-
-The pass speculatively tries to evaluate what would happen **if** some operand values were constant.
-
-In SCCP, this is:
-
-- Build lattice facts per SSA value.
-- For each op whose operands are known constants, call its dialect folding hook:
-  - `op->fold(constantOperands, foldResults)`
-- Update the lattice with either:
-  - a new constant (if fold succeeded out-of-place), or
-  - “unknown/overdefined” (if fold fails / is unsafe).
-
-Importantly, the simulation phase **does not permanently rewrite** the IR—otherwise the analysis would be order-dependent or incorrect.
-
-That’s why `ConstantPropagationAnalysis.cpp` has a guard for **in-place folds**:
-- if folding mutates the op and produces no explicit `foldResults`, the analysis restores operands/attrs and conservatively marks results as not-constant.
-
-### (B) Materialization phase (rewrite)
-
-After the solver reaches a stable answer (fixpoint), SCCP then:
-
-- replaces uses with materialized constants
-- deletes ops that are now trivially dead
-
-In SCCP’s `SCCP.cpp`, the rewrite happens in `rewrite(solver, ...)`, after `initializeAndRun(...)`.
-
-## 11.3 Example: constant propagation with SCCP (conceptual IR)
-
-### Before
-
-```mlir
-%c0 = arith.constant 0 : i32
-%c1 = arith.constant 1 : i32
-%x  = arith.addi %c0, %c1 : i32
-%y  = arith.muli %x, %c1 : i32
+```text
+one scf.for + SWP attrs
+        │
+        ▼  §1 tag ops with ttg.partition (still one region / shared SSA)
+cross-partition register edges illegal after physical split
+        │
+        ▼  §2 hoist TMEM alloc (no-op here) so tokens can be loop-carried
+        ▼  §3 replace cross-partition SSA with aref put/get (+ smem)
+        ▼  §4–5 SCCP/CSE clean arithmetic exposed by aref / indexing
+        ▼  §6 deepen arefs, assign [stage,phase], materialize mbarriers+TMA/arrive
+now no register edge between partitions — only smem/barriers
+        │
+        ▼  §7 clone one scf.for per partition into nvws.warp_group
+        ▼  §8 nvws.warp_group → ttg.warp_specialize (default + partitions + captures)
+        ▼  §9 re-stamp loop.stage/cluster per physical for (prune stale SWP tags)
+        ▼  §10 multi-buffer in-loop MakeTensorDesc if any (no-op here)
 ```
 
-### Simulation phase
+## 11.2 Pass table
 
-SCCP sees `%c0` and `%c1` are constants, calls folding:
+| # | Pass | Input (this matmul) | Key change / functions | Hands off because… |
+|--|--|--|--|--|
+| **1** | **PartitionScheduling** | One `scf.for` with `tt.warp_specialize` + prior SWP `loop.stage`/`loop.cluster` (`stage_cluster` / `input_ir`) | Graph: data mark → merge → propagate → assign ids → **`serialize`**: `ttg.partition`, `partition.outputs`, `partition.stages`, `warp_specialize.tag`. Still **one** for. | Later splits need ownership tags; cross-partition SSA still present. |
+| **2** | **NVWSHoistTmemStore** | Tagged for from §1 | Hoist `tmem_alloc` out of WS fors; thread async tokens as iter_args. | Preps TMEM producers for aref; **no-op** without TMEM/MMAv5. |
+| **3** | **NVWSInsertAref** / **InsertTmemAref** | Tagged for; register edges e.g. `descriptor_load{p1}` → `convert`/`dot`{p0} (`01`→`02`) | Cross-partition SSA → `aref.create` + put (producer smem) + get (consumer load/retarget). TMEM/MMAv5 via sibling pass. | PartitionLoops cannot clone until those edges are non-register. |
+| **4** | **SCCP** | After aref insert | Simulate fold → materialize constants; prune dead paths (stage/index cleanup). | Cleaner loop arith for CSE and LowerAref indexing. |
+| **5** | **CSE** | After SCCP | Dominance-scoped common-subexpression elimination (`knownValues`). | Dedup constants/arith before buffering / barrier materialization. |
+| **6** | **NVWSLowerAref** | Aref IR → `03-after-lower-aref` | **combineArefs** → **multiBufferAref**(`numStages`) → **AssignStagePhase** `[s,p]` → **LowerArefCreate**: wait-empty / expect+TMA / wait-full / arrive-empty. Erase aref ops. | Partitions only share smem+mbarriers; safe to physically split. |
+| **7** | **PartitionLoops** | One tagged for (`03`) → `nvws.warp_group` (`04`) | Refuse leftover cross-partition SSA; classify p0 iter_args; **`cloneForOp`** one for per region; p0 `warp_group.yield`, p1+ `return`; rewire root uses (`%51`←`%38#3`). Each region `num_warps = lookupNumWarps(loop)` (both **4** here). | Need executable WS container + captures next. |
+| **8** | **NVWSLowerWarpGroup** | `nvws.warp_group` (`04`) → `ttg.warp_specialize` (`05`) | p0 → **default** (`warp_yield`); other regions → specialized partitions (`warp_return`); rematerialize / pass captures as operands. | Final WS shape for later GPU lowering; schedule attrs still stale halves of old SWP. |
+| **9** | **ScheduleLoops** | Per-region fors (`05`) → (`06`) | WS path: deserialize → if latency ops share ≤1 stage, **collapse** to one stage/cluster; serialize. Ops unchanged. | Downstream pipeline sees coherent per-partition schedule, not old global tags. |
+| **10** | **multiBufferTMADescriptors** | After PM (`06`) | If WS nested for has `MakeTensorDesc`, ring-buffer desc slots (`numStages+1`) via `lowerTMADescriptors`. | Avoid desc overwrite vs in-flight TMA; **no-op** here (stable `%arg52`/`%arg56`, store desc outside loop). |
 
-- fold(`addi`, [0, 1]) → constant `1`
-- fold(`muli`, [1, 1]) → constant `1`
+## 11.3 This matmul in one glance
 
-### Fixpoint answer
+| Stage of AWS | What you see |
+|--|--|
+| After §1 | Still one for; load=`partition[1]`, compute/store=`[0]` |
+| After §3–§6 | A/B tiles through depth-3 smem + empty/full barriers; no cross-partition SSA |
+| After §7–§8 | default = wait-full / load / dot; `partition0` = wait-empty / TMA; `%38` = warp_specialize results (amax etc.) |
+| After §9–§10 | Body attrs mostly `cluster=1, stage=0`; descriptors unchanged |
 
-Lattices say `%x` and `%y` are constants.
+**One-liner:** AWS tags partitions → replaces cross-partition SSA with buffered arefs → materializes barriers → clones fors into warp groups → lowers to `ttg.warp_specialize` → refreshes schedule attrs (and optionally multi-buffers in-loop TMA descriptors).
 
-### Materialization phase
-
-SCCP replaces `%x`/`%y` uses with constants and removes trivially dead ops.
-
-## 11.4 How to “support this style” when writing/using passes
-
-If you want to implement your own SCCP-like or simulate→materialize pass pattern in MLIR, the key support points are:
-
-1. **Separate “facts” from “changes”.**
-   - Represent results in analysis data structures (lattices/ranges/booleans).
-   - Only rewrite in the final step.
-2. **Use out-of-place folding, or restore on in-place folding.**
-   - Provide correct `Op::fold(...)` implementations in the dialect so analyses can ask:
-     “given constant operands, can you compute a constant result?”
-   - If a fold can be in-place, analyses like SCCP must defensively guard and restore.
-3. **Materialize using a builder/folder.**
-   - In the rewrite phase, use the dialect folder / constant materialization to create the real IR constants.
-4. **Keep rewrites small and local.**
-   - Replace specific uses; then rely on canonicalization/CSE for broader cleanup.
-
-For SCCP specifically, the “support” is already built into MLIR’s dataflow + fold interface:
-- `SCCP.cpp` runs analysis to fixpoint
-- `ConstantPropagationAnalysis.cpp` uses `op->fold(...)` for simulation
-- `rewrite(...)` applies replacements and deletes dead ops
-
-If the user wants, the next step is to point out another MLIR pass in Triton that follows the same pattern (analysis → rewrite), but SCCP is the clearest example.
+---
