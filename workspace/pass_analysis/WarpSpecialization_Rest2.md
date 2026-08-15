@@ -577,21 +577,195 @@ partition1 num_warps(4) {
 
 ---
 
-# 8. NVWSLowerWarpGroup
+# 8. NVWSLowerWarpGroup (`LowerWarpGroup.cpp`)
 
-*(TBD)*
+| | |
+|--|--|
+| **Pass** | `nvws-lower-warp-group` (`NVWSLowerWarpGroup`) |
+| **When** | after `PartitionLoops` in AWS (`createNVWSLowerWarpGroup`) |
+| **Role** | rewrite `nvws.warp_group` → `ttg.warp_specialize` (analysis container → executable form) |
+| **IR** | `04-after-partition-loops.ttir` → `05-after-lower-warp-group.ttir` |
+
+`partition0` / `partition1` on `nvws.warp_group` are **regions**, not SSA. Only the op results (`%38`) and in-region values (e.g. `%67`) are SSA. This pass keeps that result contract while switching dialect.
+
+## 8.1 Mechanism — default vs specialized partitions
+
+`ttg.warp_specialize` has a **default** region (may `ttg.warp_yield` SSA results) plus zero or more specialized partitions (only `ttg.warp_return`). Captures used by specialized partitions must be explicit operands or rematerialized inside the region; default may still use outer SSA freely.
+
+So `matchAndRewrite(WarpGroupOp)`:
+
+1. **Promote** region 0 to `default` when `numWarps[0] == module ttg.num-warps` (both 4 here). Remaining regions become specialized partitions (old p1 → new `partition0`).
+2. **Capture** values defined above specialized regions (`getUsedValuesDefinedAbove`).
+3. **Build** `ttg.warp_specialize`, move bodies, rename terminators, replace `%38` uses, erase `nvws.warp_group`.
+
+If the op has results but region 0 is not the default-warp count, the pass fails — results must come from default.
+
+## 8.2 Workflow (`createWarpSpecializeOp`)
+
+### (1) Default region
+
+Move old partition0’s ops into `default`; `nvws.warp_group.yield` → `ttg.warp_yield`. Same 11 results become `%38` of the warp_specialize. Outer uses like `%51 = tt.bitcast %38#3` are unchanged.
+
+### (2) Capture handling for specialized partitions
+
+For each capture:
+
+| kind | action |
+|--|--|
+| pure constant / pure tensor op | clone into each specialized region (and chase operands) |
+| other `RankedTensorType` | `local_alloc` outside + `local_load` per region; pass the memdesc as an operand |
+| else (i32, i1, memdesc, tensordesc, …) | pass as `ttg.warp_specialize` operand → partition block arg |
+
+This matmul’s TMA partition mostly takes the “else” path (scalars + memdescs + descriptors); constants like `%c0` are rematerialized inside.
+
+### (3) Move specialized bodies
+
+Create `WarpSpecializePartitionsOp` with one region per remaining warp-group region. `populateRegion` adds block args for the capture list, moves the for-loop body, ends with `ttg.warp_return` (was `nvws.warp_group.return`).
+
+### IR — before (`04-after-partition-loops.ttir`)
+
+```mlir
+%38:11 = nvws.warp_group
+partition0 num_warps(4) {          // compute; uses outer %5, %20, … freely
+  %67:11 = scf.for ...
+  nvws.warp_group.yield %67#0, ... %67#3, ...
+}
+partition1 num_warps(4) {          // TMA; still refers to outer SSA
+  %67:10 = scf.for ...
+  nvws.warp_group.return
+}
+%51 = tt.bitcast %38#3 ...
+```
+
+### IR — after (`05-after-lower-warp-group.ttir`)
+
+```mlir
+%38:11 = ttg.warp_specialize(%5, %6, %arg42, %10, %21, %20, %25, ...)
+default {                          // was partition0
+  %67:11 = scf.for ...             // still uses outer SSA
+  ttg.warp_yield %67#0, ... %67#3, ...
+}
+partition0(%arg45: i32, ... %arg59: i32) num_warps(4) {  // was partition1
+  %67:10 = scf.for ...             // uses %arg* for captures
+  ttg.warp_return
+} : (...) -> (i32, i32, i32, tensor<128xi32, ...>, ...)
+%51 = tt.bitcast %38#3 ...
+```
+
+Root `%51` still reads `%38#3`; the hop is now `scf.for → warp_yield → %38`, same as before but on `ttg.warp_specialize`.
+
+**One-liner:** `NVWSLowerWarpGroup` maps `nvws.warp_group` → `ttg.warp_specialize`: compute becomes `default` (yields SSA), TMA becomes a specialized partition with captures as operands / rematerialized constants.
 
 ---
 
-# 9. ScheduleLoops
+# 9. ScheduleLoops (`ScheduleLoops.cpp`)
 
-*(See `description_stage_cluster.md` for the coarse SWP schedule; ordering vs AWS may differ by dump recipe.)*
+| | |
+|--|--|
+| **Pass** | `tritongpu-schedule-loops` (`TritonGPUScheduleLoops`) |
+| **When** | after `NVWSLowerWarpGroup` in AWS (`createTritonGPUScheduleLoops`) |
+| **Role** | rewrite stale `loop.stage` / `loop.cluster` on each **partitioned** `scf.for` |
+| **IR** | `05-after-lower-warp-group.ttir` → `06-after-schedule-loops.ttir` |
+| **Also see** | `description_stage_cluster.md` for the full non-WS coarse SWP recipe |
+
+Ops and control flow are unchanged; only schedule attrs are rewritten. Overlap of TMA vs compute is already **warp concurrency**; each for no longer needs the old multi-stage SWP numbering from the combined loop.
+
+## 9.1 Mechanism — prune stages after partition
+
+Before PartitionLoops, one body used stages/clusters to software-pipeline TMA ahead of dot (e.g. TMA `cluster=5, stage=0`; load/dot `cluster=2, stage=2`). After the split, default only has compute latency ops and partition0 only has TMA latency ops — each for holds a **partial** view of the old schedule.
+
+`getInitialSchedule` special-cases `tt.warp_specialize` fors:
+
+1. **Deserialize** existing `loop.stage` / `loop.cluster` into a `CoarseSchedule`.
+2. Collect **latency ops** still in this for (`wait_barrier`, `async_tma_copy`, `local_load`, …).
+3. If they all sit in **≤1 stage**, build a **1-stage** schedule and put every body op in one cluster.
+4. Else shrink/keep a multi-stage schedule (not this matmul).
+
+Then the usual prologue/deps/dist-1/remaining path runs and `serialize` stamps attrs.
+
+## 9.2 What changes on this matmul
+
+| Region | 05 (stale half of old SWP) | 06 (after) |
+|--|--|--|
+| default wait / `local_load` / `dot` | `cluster=2, stage=2` | `cluster=1, stage=0` |
+| partition0 wait / expect / TMA | `cluster=5, stage=0` | `cluster=1, stage=0` |
+| leftover index / epilogue `scf.if` | mixed `0/4/5/6` | mostly `cluster=1, stage=0` |
+
+Both fors still carry `tt.scheduled_max_stage = 2` on the for op from earlier serialization metadata; body ops are normalized to stage 0.
+
+### IR sketch
+
+```mlir
+// 05 — default still tagged as late SWP stage
+ttng.wait_barrier %75, %74 {loop.cluster = 2, loop.stage = 2}
+tt.dot ...                   {loop.cluster = 2, loop.stage = 2}
+
+// 05 — TMA partition still tagged as early SWP cluster
+ttng.async_tma_copy ...      {loop.cluster = 5, loop.stage = 0}
+
+// 06 — each partitioned for collapsed to one stage/cluster
+ttng.wait_barrier %75, %74 {loop.cluster = 1, loop.stage = 0}
+tt.dot ...                   {loop.cluster = 1, loop.stage = 0}
+ttng.async_tma_copy ...      {loop.cluster = 1, loop.stage = 0}
+```
+
+**One-liner:** after WS split, `ScheduleLoops` re-stamps stage/cluster per physical for; when a partition’s latency ops share one stage, the old multi-stage attrs collapse to a single stage.
 
 ---
 
-# 10. multiBufferTMADescriptors
+# 10. multiBufferTMADescriptors (`AutomaticWarpSpecialization.cpp` + `PipeliningUtility.cpp`)
 
-*(TBD)*
+| | |
+|--|--|
+| **Pass** | not a standalone pass — helper at end of AWS (`multiBufferTMADescriptors`) |
+| **When** | after the AWS `OpPassManager` finishes (`ScheduleLoops` last in the PM) |
+| **Role** | multi-buffer in-loop `tt.make_tensor_descriptor` so desc writes do not clobber an in-flight TMA |
+| **IR** | no change on this matmul (`06-after-schedule-loops.ttir` is already final for AWS); only kernels that rebuild descriptors inside a WS for |
+
+AWS comment: cannot rely on SWP alone for this, especially when desc updates live in **nested** loops. So it runs as an explicit post-PM step with `numStages` from the AWS option.
+
+## 10.1 Mechanism — ring of descriptor slots
+
+A tensordesc used by `async_tma_copy` is a small object in memory. If the loop **rebuilds** it each trip (`MakeTensorDesc`) into one slot while a prior TMA is still outstanding, the next write can corrupt that load. Fix: allocate `numDescs` slots and rotate a counter.
+
+`numDescs = numStages + 1` (extra slot so “next update” and “oldest in-flight load” do not collide). The helper builds `CoarseSchedule(numDescs + 1)` because CoarseSchedule’s `numStages` means max stage index + 1; `lowerTMADescriptors` then uses `maxStage = schedule.getNumStages() - 1` (= `numDescs`).
+
+## 10.2 Workflow (`multiBufferTMADescriptors` → `lowerTMADescriptors`)
+
+### (1) Collect loops
+
+Walk module fors with `tt.warp_specialize`. If a **nested** for contains `tt.make_tensor_descriptor`, insert that nested for into `descUpdateLoops`.
+
+### (2) Allocate + rewrite (`lowerTMADescriptors`)
+
+For each collected for:
+
+1. `allocTMABuffers` — one global-scratch alloc of `maxStage * TMA_SIZE` per in-loop `MakeTensorDesc` (Hopper may bump `maxStage` if a `WarpGroupDot` is present).
+2. Add a loop-carried **counter** per descriptor (init 0).
+3. Replace each `MakeTensorDesc` with: subview slot `counter` → `createTMADesc` write → `tensormap_fenceproxy_acquire` → `reinterpret_tensor_desc`; uses of the old result follow the reinterpret; counter = `(counter+1) % numBuffers`; erase `MakeTensorDesc`.
+
+If `tmaBufferMapping` is empty, return the for unchanged.
+
+### IR — this matmul (no-op)
+
+```mlir
+// Outside WS fors — store descriptor only; not multi-buffered by this helper
+%0 = tt.make_tensor_descriptor %arg7, ...
+
+ttg.warp_specialize(...)
+default { scf.for ... { ... descriptor_store %0[...] ... } }
+partition0(... %arg52: !tt.tensordesc<...>, %arg56: !tt.tensordesc<...>, ...) {
+  scf.for ... {
+    // A/B loads use stable captured tensordescs — no MakeTensorDesc in the for
+    ttng.async_tma_copy_global_to_local %arg52[...] ...
+    ttng.async_tma_copy_global_to_local %arg56[...] ...
+  }
+}
+```
+
+`descUpdateLoops` stays empty → nothing rewritten.
+
+**One-liner:** `multiBufferTMADescriptors` multi-buffers in-loop TMA descriptor rebuilds for WS kernels; this matmul’s A/B descriptors are stable captures, so the helper is a no-op.
 
 ---
 
