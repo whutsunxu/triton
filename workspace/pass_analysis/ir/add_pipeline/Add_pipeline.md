@@ -88,74 +88,90 @@ schedule.serialize(newForOp);
 | Substep | On this IR |
 |--|--|
 | **`lowerMMAs`** | Walks `MMAv5OpInterface` only. Body has classic `tt.dot` (`#nvidia_mma` v2) → **no-op**. |
-| **`lowerLoads`** | Pipelines `%43`/`%44`. |
+| **`lowerLoads`** | Pipelines `%43`/`%44` (ground truth: `test/TritonGPU/pipeline-lower-loop.mlir` `@tma_load_lowering`). |
 | **`lowerTMADescriptors`** | `%0 = make_tensor_descriptor` is **outside** the for → **no-op**. |
 
 **`lowerLoads` detail for `%43`/`%44`:**
 
-1. `getDefUseStageDiff`: def stage 0, first use (`convert`/`dot`) stage 2 → `stageDiff = 2` (cluster ordering can bump further).
-2. TMA loads → `asyncLoads` + `createAlloc(..., distance=stageDiff)` → smem ring `memdesc<2x…>` (or 3 if `loadRequiresAdditionalBuffer`).
-3. Add loop-carried `insertIdx` / `extractIdx` / `phase`; `createTMABarrierAndWait`.
-4. `createTMAAsyncLoad` → `createTMAAsyncCopy`:
+1. `getDefUseStageDiff`: def stage 0, first use (`convert`/`dot`) stage 2 → `stageDiff = 2`.
+2. `createAlloc(..., distance=2)` → ring `memdesc<2x…>` + barrier alloc; `init_barrier` each slot.
+3. Iter args init `ins=ext=-1`, `phase=0`; each trip:
+   - `ins_n = (ins+1) % 2` (stage 0)
+   - `ext_n = (ext+1) % 2` (stage 2); on wrap `phase_n = phase xor 1`
+4. `createTMABarrierAndWait`: `barrier_expect` on **`bar[ins_n]`**; `wait_barrier` on **`bar[ext_n], phase_n`**.
+5. `createTMAAsyncLoad`: TMA into **`buf[ins_n]`**; after wait, `local_load` from **`buf[ext_n]`**.
 
-```cpp
-// at load's stage/cluster:
-AsyncTMACopyGlobalToLocalOp(desc, indices, barrier, view[insertIdx], pred);
-// after wait, at first-use stage/cluster:
-replaceUsesWithLocalLoad(..., view[extractIdx]);  // feeds convert/dot
-loadOp->erase();
-```
-
-**Core IR after (1) (conceptual):**
+**Order after lowerLoop (confirmed CHECKs — not wait-before-expect):**  
+Expect/copy (stage 0, **insert** slot) appear *above* wait/`local_load` (stage 2, **extract** slot). Wait is **not** before expect in this IR. Insert and extract are different ring indices: you arm/fill a *future* slot and wait a *past* slot. Safety is lag + phase, not “wait then overwrite” in program order.
 
 ```mlir
-%allocA = ttg.local_alloc : () -> !ttg.memdesc<2x64x128xf8E5M2, ...>   // before for
-%barA   = ttg.local_alloc : () -> !ttg.memdesc<2x1xi64, ...>
-%22 = scf.for ... iter_args(..., %ins, %ext, %phase, ...) {
-  // stage 0: async fill slot %ins
-  ttng.barrier_expect %barA[%ins], ...
-  ttng.async_tma_copy_global_to_local %arg13[...] %viewA, %barA[%ins], %true
-  // stage 2: wait + local_load slot %ext → same SSA users as old %43
-  ttng.wait_barrier %barA[%ext], %phase
-  %43' = ttg.local_load %viewA_ext
-  %45 = ttg.convert_layout %43' {loop.stage = 2, ...}
-  %47 = tt.dot %45, %46, %arg51 {loop.stage = 2, ...}
+// after lowerLoops — ONE for; attrs remain; matches pipeline-lower-loop CHECKs
+%bufA = ttg.local_alloc : () -> !ttg.memdesc<2x64x128xf8E5M2, ...>
+%bar  = ttg.local_alloc : () -> !ttg.memdesc<2x1xi64, ...>  // A+B may share one wait group
+// init_barrier bar[0], bar[1]
+
+scf.for ... iter_args(%ins = -1, %ext = -1, %phase = 0, ...) {
+  %ins_n = (%ins + 1) % 2                          // stage 0
+  %ext_n = (%ext + 1) % 2                          // stage 2
+  %phase_n = wrap(%ext) ? (%phase xor 1) : %phase  // stage 2
+
+  // stage 0 — INSERT: fire TMA for a future consumer
+  ttng.barrier_expect %bar[%ins_n], BYTES, %true
+  ttng.async_tma_copy_global_to_local %arg13[...] %bufA[%ins_n], %bar[%ins_n], %true
+  // (+ B similarly)
+
+  // stage 2 — EXTRACT: wait until past TMA done, then use (old %43 users)
+  ttng.wait_barrier %bar[%ext_n], %phase_n
+  %43p = ttg.local_load %bufA[%ext_n]
+  %45 = ttg.convert_layout %43p
+  %47 = tt.dot %45, %46, %arg51
+
+  scf.yield %ins_n, %ext_n, %phase_n, ...
 }
 ```
 
-Same pattern for B (`%44`). Schedule attrs still on ops; body still **one** logical iteration — not expanded yet.
+### (2) `expandLoops` — prologue / steady; future vs current tile
 
-### (2) `expandLoops` — prologue / steady / epilogue
-
-**Code:** `SoftwarePipeliner.cpp` `expandLoops`:
+**Code:** `SoftwarePipeliner.cpp` `expandLoops` → `pipelineForLoop`:
 
 ```cpp
 schedule.deSerialize(forOp);
 finalSchedule = schedule.createFinalSchedule(forOp);
-pipelineForLoop(rewriter, forOp, options);  // PipelineExpander
-// optional peelLoopEpilogue for MMAv5+wait-in-last-stage (not this IR)
+pipelineForLoop(rewriter, forOp, options);
 resolveMaskOp(moduleOp);
 ```
 
-With `tt.scheduled_max_stage = 2`, the expander treats the schedule as a **modulo-3** pipeline (stages 0..2). Steady-state body mixes:
+`tt.scheduled_max_stage = 2` → stages `{0,1,2}`. Prologue peels early stages (issue TMAs / advance `ins` without matching dots). Steady body mixes stage-2 wait/`dot` for tile `i` with stage-0 expect/TMA for tile `i+2`. Expander placement often puts **wait (current) before expect/TMA (future)** in the steady text — that is post-expand order, not lowerLoop order.
 
-- stage-0 TMA for logical iter `i+2`
-- stage-1 bookkeeping for `i+1`
-- stage-2 `local_load`/`dot`/store for iter `i`
-
-**Core IR after (2) (conceptual):**
+**Concise IR after expand (steady trip):**
 
 ```mlir
-// prologue: peel early stages for first iters (issue TMA without matching dots)
-scf.for %i = ... {   // fewer trips; induction advanced by maxStage
-  // predicated fragments of stages from different logical iters
-  async_tma ...     // "future" tile
-  wait + local_load + convert + dot   // "current" tile
-  // store if if applicable
+// prologue: expect+TMA (+ bump ins) peeled so the ring already holds tiles
+
+scf.for %iv' = ... iter_args(%ins, %ext, %phase, %acc, ...) {
+  // current tile (stage 2) — data already in buf[ext] from an earlier trip's TMA
+  %ext_n = (%ext + 1) % 2
+  %phase_n = wrap(%ext) ? (%phase xor 1) : %phase
+  ttng.wait_barrier %bar[%ext_n], %phase_n
+  %tile = ttg.local_load %buf[%ext_n]
+  %acc_n = tt.dot (cvt %tile), ..., %acc
+
+  // future tile (stage 0) — arm+fill INSERT for use ~stageDiff trips later
+  %ins_n = (%ins + 1) % 2
+  ttng.barrier_expect %bar[%ins_n], BYTES, %pred
+  ttng.async_tma_copy_global_to_local %desc[...] %buf[%ins_n], %bar[%ins_n], %pred
+
+  scf.yield %ins_n, %ext_n, %phase_n, %acc_n, ...
 }
 ```
 
-Dynamic bounds → `MaskOp` / `PredicateStageOp` then resolved. This IR is **not** inside `ttg.warp_specialize` yet, so the MMAv5 epilogue-peel heuristic does not apply (`tt.dot` anyway).
+| Carried | Across iterations |
+|--|--|
+| `%ins` | Next TMA write index; `yield %ins_n` |
+| `%ext` | Next wait/`local_load` index; lags `%ins` by pipeline depth |
+| `%phase` | Wait parity for `%ext`; XOR when `%ext` wraps |
+
+Epilogue peel is an MMAv5 heuristic and is skipped under `ttg.warp_specialize` / for this `tt.dot`. Dynamic bounds → masks then `resolveMaskOp`.
 
 ### (3) `removePipeliningAttributes`
 
@@ -203,15 +219,15 @@ ttng.async_tma_store_wait {pendings = 0}
 
 | Step | Key code | Effect on `stage_cluster` for |
 |--|--|--|
-| (1) lowerLoops | `lowerLoads` / `createTMAAsyncLoad` | `%43`/`%44` → async TMA + smem ring + `local_load`; MMA/desc helpers no-op |
-| (2) expandLoops | `pipelineForLoop` | Prologue + steady for mixing stages across iters |
+| (1) lowerLoops | `lowerLoads` / `createTMAAsyncLoad` | expect+TMA on `ins`, wait+`local_load` on `ext`; yield `ins/ext/phase` |
+| (2) expandLoops | `pipelineForLoop` | Prologue fills ring; steady mixes wait(current)+TMA(future); carry idxs/phase |
 | (3) remove attrs | `removePipeliningAttributes` | Drop stage/cluster |
 | (4) wgmma | `asyncLaunchDots` | Usually no-op (`tt.dot`) |
 | (5) waits | `updateWaits` | Fix async wait distances |
 | (6) arith CSE-ish | arith canonicalization | Cleanup |
 | (7) TMA stores | `pipelineTMAStores` | Async-ify in-loop `descriptor_store` when `num_stages > 1` |
 
-**One-liner (this IR):** stage 0 loads become buffered async TMAs; expander overlaps those copies with stage-2 `dot` from earlier iters; attrs then disappear.
+**One-liner (this IR):** lowerLoop writes expect/TMA(`ins`) then wait/load(`ext`) with carried phase; expand overlaps wait/`dot` of tile `i` with TMA of tile `i+2`.
 
 ---
 
@@ -234,4 +250,72 @@ ttng.async_tma_store_wait {pendings = 0}
 | Building stage/cluster | `Assign_latency_And_Schedule_loop_stage_cluster.md` |
 | SWP vs WS overview | `Latency_Overlap_SWP_vs_WarpSpecialization.md` |
 | AWS then schedule prune | `WarpSpecialization_Rest2.md` §9, §11 |
-| Dump recipe | `ir/add_pipeline/dump_pipeline.sh` (post-AWS); walkthrough input: `ir/stage_cluster_analysis/stage_cluster.ttir` |
+| Dump recipe | §5 below; also `ir/add_pipeline/dump_pipeline.sh` |
+| lowerLoop CHECK golden | `test/TritonGPU/pipeline-lower-loop.mlir` `@tma_load_lowering` |
+
+---
+
+## 5. Server `triton-opt` commands (confirm IR)
+
+Set paths to your Linux build and this repo:
+
+```bash
+export TRITON_OPT=/path/to/build/.../bin/triton-opt   # Linux binary
+export IRDIR=/path/to/triton/workspace/pass_analysis/ir
+export SRC="$IRDIR/stage_cluster_analysis/stage_cluster.ttir"
+export OUT="$IRDIR/add_pipeline"
+mkdir -p "$OUT"
+NUM_STAGES=3
+```
+
+### (A) Only `lowerLoops` (step 1)
+
+```bash
+"$TRITON_OPT" "$SRC" \
+  -tritongpu-test-pipeline-lower-loop \
+  -o "$OUT/01-after-lower-loops_from_stage_cluster.ttir"
+```
+
+Inspect: `barrier_expect` / `async_tma_copy` on insert idx **before** `wait_barrier` / `local_load` on extract idx; `scf.yield` of `ins, ext, phase`.
+
+### (B) Full `add_pipeline` with intermediate dumps (steps 1→2 visible in log)
+
+```bash
+"$TRITON_OPT" "$SRC" \
+  -tritongpu-pipeline="num-stages=${NUM_STAGES} dump-intermediate-steps=true" \
+  -o "$OUT/after_pipeline_from_stage_cluster.ttir" \
+  >"$OUT/pipeline_from_stage_cluster.log" 2>&1
+```
+
+Log contains:
+
+- `SoftwarePipeliner internal IR Dump After: LowerLoops`
+- `SoftwarePipeliner internal IR Dump After: ExpandLoops`
+
+Split dumps (optional):
+
+```bash
+csplit -f "$OUT/dump-" -b '%02d.ttir' -z \
+  "$OUT/pipeline_from_stage_cluster.log" \
+  '/SoftwarePipeliner internal IR Dump/' '{*}'
+```
+
+### (C) Full pipeline without dumps
+
+```bash
+"$TRITON_OPT" "$SRC" \
+  -tritongpu-pipeline="num-stages=${NUM_STAGES}" \
+  -o "$OUT/after_pipeline_from_stage_cluster.ttir"
+```
+
+### (D) Post-AWS pipeline (compiler order on Blackwell)
+
+```bash
+"$TRITON_OPT" \
+  "$IRDIR/automatic-warp-specialization/after_automatic_warp_specialization.ttir" \
+  -tritongpu-pipeline="num-stages=${NUM_STAGES} dump-intermediate-steps=true" \
+  -o "$OUT/after_pipeline.ttir" \
+  >"$OUT/pipeline_debug.log" 2>&1
+```
+
+Or run `ir/add_pipeline/dump_pipeline.sh` after fixing `TRITON_OPT` inside the script.
