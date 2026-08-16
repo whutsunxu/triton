@@ -12,7 +12,7 @@ Both paths hide TMA (or load) latency behind MMA/`dot`, but they overlap **diffe
 | **Schedule knobs** | `loop.stage` / `loop.cluster` | `ttg.partition` → physical fors in `ttg.warp_specialize` |
 | **What `num_stages` mainly means** | Pipeline **depth** (how many iters in flight in one for) | Aref / barrier **ring depth** (how many tiles buffer between producer & consumer warps) |
 | **Passes (Blackwell-ish)** | `assign_latencies` → `schedule_loops` → `pipeline` | `add_warp_specialize` / AWS (PartitionScheduling → … → LowerWarpGroup → …) |
-| **Passes (docs)** | `Assign_latency_And_Schedule_loop_stage_cluster.md` | `WarpSpecialization_PartitionScheduling.md` + Rest1 + Rest2 |
+| **Passes (docs)** | `Assign_latency_And_Schedule_loop_stage_cluster.md` + `Add_pipeline.md` | `WarpSpecialization_PartitionScheduling.md` + Rest1 + Rest2 |
 | **Overlap looks like** | load(i+k) issued while dot(i) runs | TMA partition fills slot `s` while compute partition drains another slot |
 
 ```text
@@ -82,6 +82,7 @@ So: WS fits the **persistent-CTA + specialized-warps** style of modern GEMM/Atte
 | Topic | Doc |
 |--|--|
 | Stage / cluster / `opLatency` | `Assign_latency_And_Schedule_loop_stage_cluster.md` |
+| Materialize SWP (`add_pipeline`) | `Add_pipeline.md` |
 | Partition tags | `WarpSpecialization_PartitionScheduling.md` |
 | Aref → barriers → clone fors → `warp_specialize` | `WarpSpecialization_Rest1.md`, `WarpSpecialization_Rest2.md` |
 | AWS pass table | Rest2 §11 |
