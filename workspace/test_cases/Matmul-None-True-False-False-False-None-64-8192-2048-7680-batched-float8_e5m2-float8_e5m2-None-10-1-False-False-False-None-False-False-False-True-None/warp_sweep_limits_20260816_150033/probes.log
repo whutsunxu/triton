@@ -1,0 +1,18 @@
+=== probe num_warps=8 exit=0 ===
+python/triton_kernels/tests/test_matmul.py::test_op[8-True-False-False-False-None-64-8192-2048-7680-batched-float8_e5m2-float8_e5m2-None-10-1-False-False-False-None-False-False-False-True-None] PASSED [100%]
+=== probe num_warps=16 exit=0 ===
+python/triton_kernels/tests/test_matmul.py::test_op[16-True-False-False-False-None-64-8192-2048-7680-batched-float8_e5m2-float8_e5m2-None-10-1-False-False-False-None-False-False-False-True-None] PASSED [100%]
+=== probe num_warps=32 exit=1 ===
+python/triton_kernels/tests/test_matmul.py::test_op[32-True-False-False-False-None-64-8192-2048-7680-batched-float8_e5m2-float8_e5m2-None-10-1-False-False-False-None-False-False-False-True-None] FAILED [100%]
+_ test_op[32-True-False-False-False-None-64-8192-2048-7680-batched-float8_e5m2-float8_e5m2-None-10-1-False-False-False-None-False-False-False-True-None] _
+    raise_(OutOfResources(self.metadata.num_warps * warp_size, self.n_max_threads, "threads"))
+E   triton.runtime.errors.OutOfResources: out of resource: threads, Required: 1152, Hardware limit: 1024. Reducing block sizes or `num_stages` may help.
+FAILED python/triton_kernels/tests/test_matmul.py::test_op[32-True-False-False-False-None-64-8192-2048-7680-batched-float8_e5m2-float8_e5m2-None-10-1-False-False-False-None-False-False-False-True-None]
+=== probe num_warps=64 exit=1 ===
+python/triton_kernels/tests/test_matmul.py::test_op[64-True-False-False-False-None-64-8192-2048-7680-batched-float8_e5m2-float8_e5m2-None-10-1-False-False-False-None-False-False-False-True-None] FAILED [100%]
+_ test_op[64-True-False-False-False-None-64-8192-2048-7680-batched-float8_e5m2-float8_e5m2-None-10-1-False-False-False-None-False-False-False-True-None] _
+    raise CalledProcessError(retcode, process.args,
+E   subprocess.CalledProcessError: Command '['/Volumes/case_sensitive_workspace/triton/python/triton/backends/nvidia/bin/ptxas-blackwell', '-lineinfo', '-v', '--regAllocOptLevel=2', '--gpu-name=sm_120a', '/tmp/tmp5tv7ylnd.ptx', '-o', '/tmp/tmp5tv7ylnd.ptx.o']' returned non-zero exit status 255.
+    raise PTXASError(error)
+E   triton.runtime.errors.PTXASError: PTXAS error: Internal Triton PTX codegen error
+FAILED python/triton_kernels/tests/test_matmul.py::test_op[64-True-False-False-False-None-64-8192-2048-7680-batched-float8_e5m2-float8_e5m2-None-10-1-False-False-False-None-False-False-False-True-None]

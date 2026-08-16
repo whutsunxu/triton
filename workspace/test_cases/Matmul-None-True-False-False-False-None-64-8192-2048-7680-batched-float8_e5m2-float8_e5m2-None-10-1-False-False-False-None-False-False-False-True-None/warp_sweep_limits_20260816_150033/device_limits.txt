@@ -1,0 +1,9 @@
+max_threads_per_block=1024
+max_threads_per_mp=1536
+WS overhead model from data: launch_threads=(num_warps+4)*32
+  num_warps= 4 -> pred_block= 256  legal=True
+  num_warps= 8 -> pred_block= 384  legal=True
+  num_warps=16 -> pred_block= 640  legal=True
+  num_warps=32 -> pred_block=1152  legal=False
+  num_warps=48 -> pred_block=1664  legal=False
+  num_warps=64 -> pred_block=2176  legal=False

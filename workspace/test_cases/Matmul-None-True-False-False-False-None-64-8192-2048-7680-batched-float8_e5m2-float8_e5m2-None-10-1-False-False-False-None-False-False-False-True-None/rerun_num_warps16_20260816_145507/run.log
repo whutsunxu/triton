@@ -1,0 +1,82 @@
+=== 1) Compile + IR dump + correctness ===
+============================= test session starts ==============================
+platform linux -- Python 3.12.3, pytest-9.1.1, pluggy-1.6.0 -- /Volumes/case_sensitive_workspace/venv/bin/python
+cachedir: .pytest_cache
+rootdir: /Volumes/case_sensitive_workspace/triton
+configfile: pytest.ini
+plugins: anyio-4.13.0, instafail-0.5.0, xdist-3.8.0, forked-1.7.5
+collecting ... collected 1 item
+
+python/triton_kernels/tests/test_matmul.py::test_op[16-True-False-False-False-None-64-8192-2048-7680-batched-float8_e5m2-float8_e5m2-None-10-1-False-False-False-None-False-False-False-True-None] PASSED [100%]
+
+============================== 1 passed in 3.03s ===============================
+=== IR warpsPerCTA / kernel attrs ===
+01_after_ttir_add_loop_unroll.ttir___p_matmul_NNN_fp8e5xfp8e5xfp8e5_64x256x128x1
+02_after_ttnvgpuir_add_lower_mma.ttgir___p_matmul_NNN_fp8e5xfp8e5xfp8e5_64x256x128x1
+03_after_llvm_optimize_module_O3.llir___p_matmul_NNN_fp8e5xfp8e5xfp8e5_64x256x128x1
+04_after_llvm_translate_to_asm.ptx___p_matmul_NNN_fp8e5xfp8e5xfp8e5_64x256x128x1
+--- 01_after_ttir_add_loop_unroll.ttir___p_matmul_NNN_fp8e5xfp8e5xfp8e5_64x256x128x1 ---
+  tt.func public @_p_matmul_NNN_fp8e5xfp8e5xfp8e5_64x256x128x1(%Y: !tt.tensordesc<1x64x256xf8E5M2> loc("Y"(#loc)), %Y.shape.0: i32 loc("Y.shape.0"(#loc)), %Y.shape.1: i32 loc("Y.shape.1"(#loc)), %Y.shape.2: i32 loc("Y.shape.2"(#loc)), %Y.stride.0: i64 loc("Y.stride.0"(#loc)), %Y.stride.1: i64 loc("Y.stride.1"(#loc)), %Y.stride.2: i64 loc("Y.stride.2"(#loc)), %YPtr: !tt.ptr<f8E5M2> {tt.divisibility = 16 : i32} loc("YPtr"(#loc)), %stride_y_k: i32 {tt.divisibility = 16 : i32} loc("stride_y_k"(#loc)), %stride_y_z: i32 {tt.divisibility = 16 : i32} loc("stride_y_z"(#loc)), %stride_y_m: i32 {tt.divisibility = 16 : i32} loc("stride_y_m"(#loc)), %YExpectedScale: !tt.ptr<f32> {tt.divisibility = 16 : i32} loc("YExpectedScale"(#loc)), %YActualScale: !tt.ptr<f32> {tt.divisibility = 16 : i32} loc("YActualScale"(#loc)), %X: !tt.tensordesc<1x64x128xf8E5M2> loc("X"(#loc)), %X.shape.0: i32 loc("X.shape.0"(#loc)), %X.shape.1: i32 loc("X.shape.1"(#loc)), %X.shape.2: i32 loc("X.shape.2"(#loc)), %X.stride.0: i64 loc("X.stride.0"(#loc)), %X.stride.1: i64 loc("X.stride.1"(#loc)), %X.stride.2: i64 loc("X.stride.2"(#loc)), %XPtr: !tt.ptr<f8E5M2> {tt.divisibility = 16 : i32} loc("XPtr"(#loc)), %stride_x_z: i32 {tt.divisibility = 16 : i32} loc("stride_x_z"(#loc)), %stride_x_m: i32 {tt.divisibility = 16 : i32} loc("stride_x_m"(#loc)), %XScale: !tt.ptr<f32> {tt.divisibility = 16 : i32} loc("XScale"(#loc)), %W: !tt.tensordesc<1x128x256xf8E5M2> loc("W"(#loc)), %W.shape.0: i32 loc("W.shape.0"(#loc)), %W.shape.1: i32 loc("W.shape.1"(#loc)), %W.shape.2: i32 loc("W.shape.2"(#loc)), %W.stride.0: i64 loc("W.stride.0"(#loc)), %W.stride.1: i64 loc("W.stride.1"(#loc)), %W.stride.2: i64 loc("W.stride.2"(#loc)), %WPtr: !tt.ptr<f8E5M2> {tt.divisibility = 16 : i32} loc("WPtr"(#loc)), %stride_w_e: i32 {tt.divisibility = 16 : i32} loc("stride_w_e"(#loc)), %stride_w_k: i32 {tt.divisibility = 16 : i32} loc("stride_w_k"(#loc)), %WScale: !tt.ptr<f32> {tt.divisibility = 16 : i32} loc("WScale"(#loc)), %B: !tt.ptr<f32> {tt.divisibility = 16 : i32} loc("B"(#loc)), %stride_b_e: i32 {tt.divisibility = 16 : i32} loc("stride_b_e"(#loc)), %M: i32 {tt.divisibility = 16 : i32} loc("M"(#loc)), %N: i32 {tt.divisibility = 16 : i32} loc("N"(#loc)), %K: i32 {tt.divisibility = 16 : i32} loc("K"(#loc)), %K_W: i32 {tt.divisibility = 16 : i32} loc("K_W"(#loc)), %batch_size: i32 loc("batch_size"(#loc)), %grid_m: i32 {tt.divisibility = 16 : i32} loc("grid_m"(#loc)), %grid_n: i32 loc("grid_n"(#loc)), %reduce_rank: i32 {tt.divisibility = 16 : i32} loc("reduce_rank"(#loc))) attributes {noinline = false} {
+    } {tt.flatten, tt.warp_specialize} loc(#loc190)
+--- 02_after_ttnvgpuir_add_lower_mma.ttgir___p_matmul_NNN_fp8e5xfp8e5xfp8e5_64x256x128x1 ---
+#blocked = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [1, 16], order = [1, 0]}>
+#blocked1 = #ttg.blocked<{sizePerThread = [1], threadsPerWarp = [32], warpsPerCTA = [16], order = [0]}>
+#mma = #ttg.nvidia_mma<{versionMajor = 2, versionMinor = 0, warpsPerCTA = [2, 8], instrShape = [16, 8]}>
+  tt.func public @_p_matmul_NNN_fp8e5xfp8e5xfp8e5_64x256x128x1(%Y: !tt.tensordesc<1x64x256xf8E5M2, #shared> loc("Y"(#loc)), %Y.shape.0: i32 loc("Y.shape.0"(#loc)), %Y.shape.1: i32 loc("Y.shape.1"(#loc)), %Y.shape.2: i32 loc("Y.shape.2"(#loc)), %Y.stride.0: i64 loc("Y.stride.0"(#loc)), %Y.stride.1: i64 loc("Y.stride.1"(#loc)), %Y.stride.2: i64 loc("Y.stride.2"(#loc)), %YPtr: !tt.ptr<f8E5M2> {tt.divisibility = 16 : i32} loc("YPtr"(#loc)), %stride_y_k: i32 {tt.divisibility = 16 : i32} loc("stride_y_k"(#loc)), %stride_y_z: i32 {tt.divisibility = 16 : i32} loc("stride_y_z"(#loc)), %stride_y_m: i32 {tt.divisibility = 16 : i32} loc("stride_y_m"(#loc)), %YExpectedScale: !tt.ptr<f32> {tt.divisibility = 16 : i32} loc("YExpectedScale"(#loc)), %YActualScale: !tt.ptr<f32> {tt.divisibility = 16 : i32} loc("YActualScale"(#loc)), %X: !tt.tensordesc<1x64x128xf8E5M2, #shared> loc("X"(#loc)), %X.shape.0: i32 loc("X.shape.0"(#loc)), %X.shape.1: i32 loc("X.shape.1"(#loc)), %X.shape.2: i32 loc("X.shape.2"(#loc)), %X.stride.0: i64 loc("X.stride.0"(#loc)), %X.stride.1: i64 loc("X.stride.1"(#loc)), %X.stride.2: i64 loc("X.stride.2"(#loc)), %XPtr: !tt.ptr<f8E5M2> {tt.divisibility = 16 : i32} loc("XPtr"(#loc)), %stride_x_z: i32 {tt.divisibility = 16 : i32} loc("stride_x_z"(#loc)), %stride_x_m: i32 {tt.divisibility = 16 : i32} loc("stride_x_m"(#loc)), %XScale: !tt.ptr<f32> {tt.divisibility = 16 : i32} loc("XScale"(#loc)), %W: !tt.tensordesc<1x128x256xf8E5M2, #shared> loc("W"(#loc)), %W.shape.0: i32 loc("W.shape.0"(#loc)), %W.shape.1: i32 loc("W.shape.1"(#loc)), %W.shape.2: i32 loc("W.shape.2"(#loc)), %W.stride.0: i64 loc("W.stride.0"(#loc)), %W.stride.1: i64 loc("W.stride.1"(#loc)), %W.stride.2: i64 loc("W.stride.2"(#loc)), %WPtr: !tt.ptr<f8E5M2> {tt.divisibility = 16 : i32} loc("WPtr"(#loc)), %stride_w_e: i32 {tt.divisibility = 16 : i32} loc("stride_w_e"(#loc)), %stride_w_k: i32 {tt.divisibility = 16 : i32} loc("stride_w_k"(#loc)), %WScale: !tt.ptr<f32> {tt.divisibility = 16 : i32} loc("WScale"(#loc)), %B: !tt.ptr<f32> {tt.divisibility = 16 : i32} loc("B"(#loc)), %stride_b_e: i32 {tt.divisibility = 16 : i32} loc("stride_b_e"(#loc)), %M: i32 {tt.divisibility = 16 : i32} loc("M"(#loc)), %N: i32 {tt.divisibility = 16 : i32} loc("N"(#loc)), %K: i32 {tt.divisibility = 16 : i32} loc("K"(#loc)), %K_W: i32 {tt.divisibility = 16 : i32} loc("K_W"(#loc)), %batch_size: i32 loc("batch_size"(#loc)), %grid_m: i32 {tt.divisibility = 16 : i32} loc("grid_m"(#loc)), %grid_n: i32 loc("grid_n"(#loc)), %reduce_rank: i32 {tt.divisibility = 16 : i32} loc("reduce_rank"(#loc))) attributes {noinline = false} {
+    %local_absmax_26 = ttg.warp_specialize(%pid_z, %width, %grid_m, %0, %x_14, %x, %x_17, %X, %w_20, %w, %w_23, %W, %local_absmax_13, %local_absmax_12, %tile_id1_8) attributes {requestedRegisters = array<i32: 24>}
+      } {tt.warp_specialize, ttg.warp_specialize.tag = 0 : i32} loc(#loc185)
+    partition0(%pid_z_32: i32 loc(callsite(#loc124 at #loc6)), %width_33: i32 loc(callsite(#loc125 at #loc126)), %grid_m_34: i32 loc("grid_m"(#loc)), %arg48: i1 loc("/Volumes/case_sensitive_workspace/triton/python/triton_kernels/triton_kernels/matmul_details/_p_matmul.py":304:19), %x_35: !ttg.memdesc<2x1xi64, #shared2, #smem, mutable> loc("x"(#loc19)), %x_36: !ttg.memdesc<2x64x128xf8E5M2, #shared1, #smem, mutable> loc("x"(#loc19)), %x_37: !ttg.memdesc<2x1xi64, #shared2, #smem, mutable> loc("x"(#loc19)), %X_38: !tt.tensordesc<1x64x128xf8E5M2, #shared> loc("X"(#loc)), %w_39: !ttg.memdesc<2x1xi64, #shared2, #smem, mutable> loc("w"(#loc20)), %w_40: !ttg.memdesc<2x128x256xf8E5M2, #shared1, #smem, mutable> loc("w"(#loc20)), %w_41: !ttg.memdesc<2x1xi64, #shared2, #smem, mutable> loc("w"(#loc20)), %W_42: !tt.tensordesc<1x128x256xf8E5M2, #shared> loc("W"(#loc)), %local_absmax_43: i32 loc("local_absmax"(#loc133)), %local_absmax_44: i32 loc("local_absmax"(#loc133)), %tile_id1_45: i32 loc("tile_id1"(#loc4))) num_warps(2) {
+      } {tt.warp_specialize, ttg.warp_specialize.tag = 0 : i32} loc(#loc185)
+--- 03_after_llvm_optimize_module_O3.llir___p_matmul_NNN_fp8e5xfp8e5xfp8e5_64x256x128x1 ---
+--- 04_after_llvm_translate_to_asm.ptx___p_matmul_NNN_fp8e5xfp8e5xfp8e5_64x256x128x1 ---
+=== 2) nsys ===
+python/triton_kernels/tests/test_matmul.py::test_op[16-True-False-False-False-None-64-8192-2048-7680-batched-float8_e5m2-float8_e5m2-None-10-1-False-False-False-None-False-False-False-True-None] PASSED [100%]
+ Time (%)  Total Time (ns)  Num Calls   Avg (ns)     Med (ns)    Min (ns)   Max (ns)   StdDev (ns)           Name         
+ Time (%)  Total Time (ns)  Num Calls  Avg (ns)   Med (ns)   Min (ns)  Max (ns)  StdDev (ns)               Name              
+[6/8] Executing 'cuda_gpu_kern_sum' stats report
+ Time (%)  Total Time (ns)  Instances   Avg (ns)    Med (ns)   Min (ns)  Max (ns)  StdDev (ns)                                                  Name                                                
+     53.7         38657263          1  38657263.0  38657263.0  38657263  38657263          0.0  _p_matmul_NNN_fp8e5xfp8e5xfp8e5_64x256x128x1                                                        
+ Time (%)  Total Time (ns)  Count  Avg (ns)  Med (ns)  Min (ns)  Max (ns)  StdDev (ns)            Operation           
+[6/8] Executing 'cuda_gpu_kern_sum' stats report
+
+ Time (%)  Total Time (ns)  Instances   Avg (ns)    Med (ns)   Min (ns)  Max (ns)  StdDev (ns)                                                  Name                                                
+ --------  ---------------  ---------  ----------  ----------  --------  --------  -----------  ----------------------------------------------------------------------------------------------------
+     53.7         38657263          1  38657263.0  38657263.0  38657263  38657263          0.0  _p_matmul_NNN_fp8e5xfp8e5xfp8e5_64x256x128x1                                                        
+     19.4         13965614          2   6982807.0   6982807.0   2803452  11162162    5910500.5  void at::native::elementwise_kernel<(int)128, (int)4, void at::native::gpu_kernel_impl<at::native::…
+     11.2          8087798          2   4043899.0   4043899.0   1598686   6489112    3458053.4  void at::native::vectorized_elementwise_kernel<(int)4, at::native::neg_kernel_cuda(at::TensorIterat…
+      8.1          5859225          2   2929612.5   2929612.5   1160351   4698874    2502113.6  void at::native::vectorized_elementwise_kernel<(int)4, at::native::float8_copy_kernel_cuda(at::Tens…
+      7.5          5361210          2   2680605.0   2680605.0   1075935   4285275    2269346.1  void at::native::<unnamed>::distribution_elementwise_grid_stride_kernel<unsigned int, (int)4, void …
+      0.0             2528          2      1264.0      1264.0       992      1536        384.7  void at::native::vectorized_elementwise_kernel<(int)2, at::native::FillFunctor<long>, std::array<ch…
+      0.0             1664          1      1664.0      1664.0      1664      1664          0.0  void at::native::<unnamed>::distribution_elementwise_grid_stride_kernel<float, (int)4, void at::nat…
+
+[7/8] Executing 'cuda_gpu_mem_time_sum' stats report
+=== 3) ncu warp schedule ===
+============================= test session starts ==============================
+platform linux -- Python 3.12.3, pytest-9.1.1, pluggy-1.6.0 -- /Volumes/case_sensitive_workspace/venv/bin/python
+cachedir: .pytest_cache
+rootdir: /Volumes/case_sensitive_workspace/triton
+configfile: pytest.ini
+plugins: anyio-4.13.0, instafail-0.5.0, xdist-3.8.0, forked-1.7.5
+collecting ... ==PROF== Connected to process 1321 (/usr/bin/python3.12)
+collected 1 item
+
+python/triton_kernels/tests/test_matmul.py::test_op[16-True-False-False-False-None-64-8192-2048-7680-batched-float8_e5m2-float8_e5m2-None-10-1-False-False-False-None-False-False-False-True-None] ==PROF== Profiling "_p_matmul_NNN_fp8e5xfp8e5xfp8e5_64x256x128x1": 0%....50%....100% - 18 passes
+PASSED [100%]
+
+============================== 1 passed in 5.20s ===============================
+==PROF== Disconnected from process 1321
+==PROF== Report: /Volumes/case_sensitive_workspace/triton/workspace/test_cases/Matmul-None-True-False-False-False-None-64-8192-2048-7680-batched-float8_e5m2-float8_e5m2-None-10-1-False-False-False-None-False-False-False-True-None/rerun_num_warps16_20260816_145507/test_matmul_ncu_warp.ncu-rep
+total 2.9M
+drwxr-xr-x 3 root root 4.0K Aug 16 14:55 .
+drwxr-xr-x 1 root root 4.0K Aug 16 14:55 ..
+-rw-r--r-- 1 root root 7.2K Aug 16 14:55 ir_warps_check.txt
+drwxr-xr-x 2 root root 4.0K Aug 16 14:55 irs
+-rw-r--r-- 1 root root 1.2K Aug 16 14:55 ncu_warp.log
+-rw-r--r-- 1 root root  681 Aug 16 14:55 pytest_compile.log
+-rw-r--r-- 1 root root  13K Aug 16 14:55 run.log
+-rw-r--r-- 1 root root 208K Aug 16 14:55 test_matmul_ncu_warp.ncu-rep
+-rw-r--r-- 1 root root  39K Aug 16 14:55 test_matmul_ncu_warp_details.txt
+-rw-r--r-- 1 root root 6.4K Aug 16 14:55 test_matmul_ncu_warp_summary.txt
+-rw-r--r-- 1 root root  19K Aug 16 14:55 test_matmul_nsys.log
+-rw-rw-r-- 1 root root 809K Aug 16 14:55 test_matmul_nsys.nsys-rep
+-rw-r--r-- 1 root root 1.8M Aug 16 14:55 test_matmul_nsys.sqlite
