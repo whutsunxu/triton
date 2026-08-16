@@ -1,0 +1,58 @@
+[776] python3.12@127.0.0.1
+  _p_matmul_NNN_fp8e5xfp8e5xfp8e5_64x256x128x1 (36, 1, 1)x(256, 1, 1), Context 1, Stream 7, Device 0, CC 12.0
+    Section: Command line profiler metrics
+    -------------------------------------------------------------------- ----------- ------------
+    Metric Name                                                          Metric Unit Metric Value
+    -------------------------------------------------------------------- ----------- ------------
+    dram__bytes_op_read.avg                                                    Mbyte       198.35
+    dram__bytes_op_read.max                                                    Mbyte       198.40
+    dram__bytes_op_read.min                                                    Mbyte       198.28
+    dram__bytes_op_read.sum                                                    Mbyte       793.41
+    dram__bytes_op_write.avg                                                   Mbyte        41.80
+    dram__bytes_op_write.max                                                   Mbyte        41.82
+    dram__bytes_op_write.min                                                   Mbyte        41.79
+    dram__bytes_op_write.sum                                                   Mbyte       167.21
+    sm__inst_executed_pipe_tensor.avg                                           inst   8738133.33
+    sm__inst_executed_pipe_tensor.max                                           inst      8755200
+    sm__inst_executed_pipe_tensor.min                                           inst      8724480
+    sm__inst_executed_pipe_tensor.sum                                           inst    314572800
+    sm__inst_executed_pipe_tensor_subpipe_hmma.avg                              inst   8738133.33
+    sm__inst_executed_pipe_tensor_subpipe_hmma.max                              inst      8755200
+    sm__inst_executed_pipe_tensor_subpipe_hmma.min                              inst      8724480
+    sm__inst_executed_pipe_tensor_subpipe_hmma.sum                              inst    314572800
+    sm__inst_executed_pipe_tma_pred_on_any.avg                                  inst     52909.67
+    sm__inst_executed_pipe_tma_pred_on_any.max                                  inst        53013
+    sm__inst_executed_pipe_tma_pred_on_any.min                                  inst        52827
+    sm__inst_executed_pipe_tma_pred_on_any.sum                                  inst      1904748
+    sm__pipe_tensor_cycles_active.avg                                          cycle 139810133.33
+    sm__pipe_tensor_cycles_active.max                                          cycle    140083200
+    sm__pipe_tensor_cycles_active.min                                          cycle    139591680
+    sm__pipe_tensor_cycles_active.sum                                          cycle   5033164800
+    sm__pipe_tma_cycles_active.avg                                             cycle    211635.67
+    sm__pipe_tma_cycles_active.max                                             cycle       212049
+    sm__pipe_tma_cycles_active.min                                             cycle       211305
+    sm__pipe_tma_cycles_active.sum                                             cycle      7618884
+    smsp__warp_issue_stalled_barrier_per_warp_active.max_rate                                   1
+    smsp__warp_issue_stalled_barrier_per_warp_active.pct                           %        25.87
+    smsp__warp_issue_stalled_barrier_per_warp_active.ratio                                   0.26
+    smsp__warp_issue_stalled_lg_throttle_per_warp_active.max_rate                               1
+    smsp__warp_issue_stalled_lg_throttle_per_warp_active.pct                       %            0
+    smsp__warp_issue_stalled_lg_throttle_per_warp_active.ratio                                  0
+    smsp__warp_issue_stalled_long_scoreboard_per_warp_active.max_rate                           1
+    smsp__warp_issue_stalled_long_scoreboard_per_warp_active.pct                   %        20.05
+    smsp__warp_issue_stalled_long_scoreboard_per_warp_active.ratio                           0.20
+    smsp__warp_issue_stalled_math_pipe_throttle_per_warp_active.max_rate                        1
+    smsp__warp_issue_stalled_math_pipe_throttle_per_warp_active.pct                %        18.48
+    smsp__warp_issue_stalled_math_pipe_throttle_per_warp_active.ratio                        0.18
+    smsp__warp_issue_stalled_mio_throttle_per_warp_active.max_rate                              1
+    smsp__warp_issue_stalled_mio_throttle_per_warp_active.pct                      %         5.39
+    smsp__warp_issue_stalled_mio_throttle_per_warp_active.ratio                              0.05
+    smsp__warp_issue_stalled_short_scoreboard_per_warp_active.max_rate                          1
+    smsp__warp_issue_stalled_short_scoreboard_per_warp_active.pct                  %         3.71
+    smsp__warp_issue_stalled_short_scoreboard_per_warp_active.ratio                          0.04
+    smsp__warp_issue_stalled_wait_per_warp_active.max_rate                                      1
+    smsp__warp_issue_stalled_wait_per_warp_active.pct                              %        16.87
+    smsp__warp_issue_stalled_wait_per_warp_active.ratio                                      0.17
+    smsp__issue_active.avg.pct_of_peak_sustained_active                            %        12.09
+    -------------------------------------------------------------------- ----------- ------------
+

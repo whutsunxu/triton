@@ -1,0 +1,21 @@
+[266] python3.12@127.0.0.1
+  _p_matmul_NNN_fp8e5xfp8e5xfp8e5_64x256x128x1 (36, 1, 1)x(256, 1, 1), Context 1, Stream 7, Device 0, CC 12.0
+    Section: PM Sampling
+    ------------------------- ----------- ------------
+    Metric Name               Metric Unit Metric Value
+    ------------------------- ----------- ------------
+    Elapsed Cycles                  cycle    122630641
+    Duration                           ms        50.95
+    Maximum Buffer Size             Mbyte        50.92
+    Maximum Sampling Interval          us           12
+    # Pass Groups                                    6
+    ------------------------- ----------- ------------
+
+    Section: PM Sampling: Warp States
+    -------------- ----------- ------------
+    Metric Name    Metric Unit Metric Value
+    -------------- ----------- ------------
+    Elapsed Cycles       cycle    122630641
+    Duration                ms        50.95
+    -------------- ----------- ------------
+

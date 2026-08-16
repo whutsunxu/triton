@@ -207,7 +207,19 @@ So `block_m=64` persistent is **~4.8% faster** than persistent-128, but still **
 
 ### Nsight Compute
 
-**Not collected** for this experiment.
+Collected 2026-08-16 under `ncu_20260816_142622/` (Nsight Compute **2025.3.1**, container `--privileged`).
+
+See **`ncu_20260816_142622/ncu_bottleneck_summary.md`** for the full TC / TMA / warp-stall write-up.
+
+| Artifact | Role |
+| -------- | ---- |
+| `test_matmul_ncu_main.ncu-rep` | SOL, TC roofline, Memory, Scheduler, WarpState, Compute, Instruction, Source |
+| `test_matmul_ncu_pmsampling.ncu-rep` | `--set pmsampling` |
+| `test_matmul_ncu_tma_tensor.ncu-rep` | TC/TMA pipe + stall % metrics |
+| `test_matmul_ncu_tma_l1tex.ncu-rep` | TMA L1TEX load/store bytes |
+
+**Headline stalls** (`*_per_warp_active.pct`): barrier **25.9%**, long_scoreboard **20.1%**, math_pipe_throttle **18.5%**, wait **16.9%**.  
+Occupancy **16.7%** (regs **255**). Tensor pipe **28.5%**, TMA pipe **0.17%** (but **~25 GB** TMA loads — TMA not the limiter). SM/Mem SOL ~**34%** → latency-bound.
 
 ### IR dumps
 

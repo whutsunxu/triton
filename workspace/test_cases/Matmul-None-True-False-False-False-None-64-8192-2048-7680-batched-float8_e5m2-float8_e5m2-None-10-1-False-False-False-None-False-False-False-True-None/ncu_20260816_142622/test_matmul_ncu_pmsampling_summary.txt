@@ -1,0 +1,16 @@
+[266] python3.12@127.0.0.1
+  _p_matmul_NNN_fp8e5xfp8e5xfp8e5_64x256x128x1 (36, 1, 1)x(256, 1, 1), Device 0, CC 12.0, Invocations 1
+    Section: PM Sampling
+    ------------------------- ----------- ------- ------- -------
+    Metric Name               Metric Unit Minimum Maximum Average
+    ------------------------- ----------- ------- ------- -------
+    Maximum Buffer Size             Mbyte   50.92   50.92   50.92
+    Maximum Sampling Interval          us   12.00   12.00   12.00
+    # Pass Groups                            6.00    6.00    6.00
+    ------------------------- ----------- ------- ------- -------
+
+  Note: The shown averages are calculated as the arithmetic mean of the metric values after the evaluation of the    
+  metrics for each individual kernel launch.                                                                         
+  If aggregating across varying launch configurations (like shared memory, cache config settings), the arithmetic    
+  mean can be misleading and looking at the individual results is recommended instead.                               
+

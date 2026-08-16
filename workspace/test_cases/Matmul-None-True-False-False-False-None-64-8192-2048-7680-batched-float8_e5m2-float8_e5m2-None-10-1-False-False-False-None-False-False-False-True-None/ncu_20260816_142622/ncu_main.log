@@ -1,0 +1,25 @@
+=== MAIN comprehensive ncu ===
+============================= test session starts ==============================
+platform linux -- Python 3.12.3, pytest-9.1.1, pluggy-1.6.0 -- /Volumes/case_sensitive_workspace/venv/bin/python
+cachedir: .pytest_cache
+rootdir: /Volumes/case_sensitive_workspace/triton
+configfile: pytest.ini
+plugins: anyio-4.13.0, instafail-0.5.0, xdist-3.8.0, forked-1.7.5
+collecting ... ==PROF== Connected to process 130 (/usr/bin/python3.12)
+collected 1 item
+
+python/triton_kernels/tests/test_matmul.py::test_op[None-True-False-False-False-None-64-8192-2048-7680-batched-float8_e5m2-float8_e5m2-None-10-1-False-False-False-None-False-False-False-True-None] ==PROF== Profiling "_p_matmul_NNN_fp8e5xfp8e5xfp8e5_64x256x128x1": 0%
+==WARNING== Launching the workload is taking more time than expected. If this continues to hang, terminate the profile and re-try by profiling the range of all related launches using '--replay-mode range'. See https://docs.nvidia.com/nsight-compute/ProfilingGuide/index.html#replay for more details.
+....50%....100% - 37 passes
+PASSED [100%]
+
+============================== 1 passed in 17.18s ==============================
+==PROF== Disconnected from process 130
+==PROF== Report: /Volumes/case_sensitive_workspace/triton/workspace/test_cases/Matmul-None-True-False-False-False-None-64-8192-2048-7680-batched-float8_e5m2-float8_e5m2-None-10-1-False-False-False-None-False-False-False-True-None/ncu_20260816_142622/test_matmul_ncu_main.ncu-rep
+MAIN_EXIT:0
+total 2.4M
+drwxr-xr-x 2 root root 4.0K Aug 16 14:26 .
+drwxr-xr-x 1 root root 4.0K Aug 16 14:26 ..
+-rw-r--r-- 1 root root 1.5K Aug 16 14:26 ncu_main.log
+-rw-r--r-- 1 root root 2.3M Aug 16 14:26 test_matmul_ncu_main.ncu-rep
+MAIN_DONE
