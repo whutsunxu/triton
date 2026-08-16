@@ -1,6 +1,0 @@
-kernel=_matmul_NNN_fp8e5xfp8e5xfp8e5_128x256x128x1
-rerun_ms=41.048802
-baseline_ms=40.781553
-gap_ms=0.2672489999999996
-gap_pct=0.6553183494507911
-verdict=similar / within a few percent (under 5%)
