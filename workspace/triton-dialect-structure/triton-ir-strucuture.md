@@ -448,11 +448,100 @@ if (auto attr = helper.getAttr(forOp))
 
 ---
 
-### 2.5 Traits — verify mix-ins
+### 2.5 Traits — verify mix-ins (what they enable)
 
-Covered in §1.5. Key: traits do **not** add polymorphic getters; they add `verifyTrait` hooks. Implemented in `Traits.h` / `Traits.cpp`.
+Covered in §1.5 for `tt.load` wiring. Key: traits do **not** add polymorphic getters; they add `verifyTrait` hooks (and some ODS constraints). Triton native traits live in `TritonInterfaces.td` + `Traits.h` / `Traits.cpp`. Below: usual traits when defining an op, **what you can do if the op has it**, and an example.
+
+#### Base op classes (implicit — you don’t list these per op)
+
+| Base | Always appended | What you can do | Example |
+| ---- | --------------- | --------------- | ------- |
+| `TT_Op` | `TensorSizeTrait`, `VerifyTensorLayoutsTrait` | Reject invalid tensor sizes/layouts at verify; passes can assume those invariants | `tt.dot %a, %b, %c` — verifier checks blocked/MMA layouts vs shape |
+| `TTG_Op` | `VerifyTensorLayoutsTrait`, `VerifyMemDescLayoutsTrait` | Same for GPU tensors + shared memdesc encodings | `ttg.local_load %smem` — `#shared` encoding must match load result layout |
+| `TTNG_Op` | same as TTG | Same for TMEM/TMA ops | `ttng.tmem_load %acc` — TMEM encoding must match distributed result |
+
+#### 1) Side effects / purity
+
+| Trait | When | What you can do | Example |
+| ----- | ---- | --------------- | ------- |
+| **`Pure`** | No memory effects | CSE, DCE, hoist, speculate (if nothing else blocks) | `tt.addptr %p, %i` — two identical `addptr` on same `%p,%i` → one can be reused |
+| **`NoMemoryEffect`** | Explicit “no effects” marker | Same as Pure; used when semantics are view-like, not compute | `tt.cat %a, %b` — concatenation is a shape/view op with no mem traffic |
+| **`MemoryEffectsOpInterface`** | Custom read/write/barrier semantics | Query `getEffects()` for legal reordering, alias analysis, fence insertion | `tt.load %ptr` — pass won’t hoist load above a `tt.store` to same memory |
+| **`MemRead` / `MemWrite` on operand** | Effect tied to one value | Fine-grained mod/ref without a full custom interface | `tt.store %ptr, %val` — only `%ptr` is `MemWrite<GlobalMemory>` |
+| **`RecursiveMemoryEffects`** | Region body may have effects | Effect analysis walks into regions | `tt.reduce` — if body stores to smem, outer op is treated as having those effects |
+
+Loads/stores usually **don’t** use `Pure`; they declare effects via `MemoryEffectsOpInterface` or operand resources.
+
+#### 2) Shape / encoding / type constraints
+
+| Trait | Role | What you can do | Example |
+| ----- | ---- | --------------- | ------- |
+| **`Elementwise`** | Per-element, same mapping | Fuse elementwise chains; broadcast/mask propagation | `tt.fp_to_fp %x` — same op on every lane; can fold into a `map_elementwise` region |
+| **`SameOperandsAndResultShape`** | All shapes match | Rewrite without reshaping | `tt.bitcast %tensor` — `tensor<128xf32>` in → `tensor<128xf32>` out |
+| **`SameOperandsAndResultEncoding`** | All encodings match | Layout-preserving rewrites | `tt.mulhiui %a, %b` — inputs and result stay `#blocked` |
+| **`SameLoadStoreOperandsAndResultShape`** | Load/store shape rules | Prove load result shape = ptr pointee shape | `tt.load %ptr` where `%ptr: !tt.ptr<tensor<64x64xf16>>` → `tensor<64x64xf16>` |
+| **`SameLoadStoreOperandsAndResultEncoding`** | Load/store encoding rules | Safe layout propagation through memory ops | Masked load keeps same `#blocked` on ptr lanes and result |
+| **`TypesMatchWith<...>`** | Exact cross-operand type relation | Aggressive patterns; verifier catches mistakes early | `tt.load`: `result` must equal `getPointeeType(ptr)` — can't load `f32` from `!tt.ptr<f16>` |
+| **`OptionalTypesMatchWith<...>`** | Optional operand type rules | Same, when operand may be absent | `ttg.async_copy_global_to_local` — optional `mask` type inferred only if present |
+| **`InferTypeOpInterface`** | Structural type inference | Builders/parsers create op without spelling result type | `tt.load %ptr` — result type inferred from pointer in `inferReturnTypes` |
+| **`InferTensorTypeOpWithLayoutEquivalence`** | Infer with layout equivalence | Canonicalize layouts without breaking semantics | Two `#blocked` layouts that are equivalent but not pointer-equal still verify |
+
+Simple pure elementwise op minimum: `[Elementwise, SameOperandsAndResultType, Pure]`.
+
+#### 3) Operand structure
+
+| Trait | When | What you can do | Example |
+| ----- | ---- | --------------- | ------- |
+| **`AttrSizedOperandSegments`** | Optional / grouped operands | Parser + patterns treat operand groups correctly | `tt.load %ptr, %mask, %other` — segments: 1 ptr + 0–1 mask + 0–1 other (see §1.5) |
+
+#### 4) Interfaces (passes query behavior)
+
+Declared as `DeclareOpInterfaceMethods<…>` (sometimes with a method subset). Interfaces **do** add polymorphic getters — contrast with native traits. Detail in §2.6.
+
+| Interface | Typical ops | What you can do | Example |
+| --------- | ----------- | --------------- | ------- |
+| **`PredicatedOpInterface`** | load, store, masked ops | Uniformly get/set predicate; merge predicates in pipeline | SWP replaces `mask` with `mask & phase_pred` via `setPredicateOperand` |
+| **`DotOpInterface`** | `dot`, `dot_scaled`, MMA | Generic matmul transforms | `AccelerateMatmul` walks `DotOpInterface` to pick MMA layout |
+| **`MemoryEffectsOpInterface`** | loads, allocs, barriers | Scheduling, LICM, fence insertion | `ttng.wait_barrier` — can't move past dependent TMA |
+| **`InferTypeOpInterface`** | ops with inferred results | Rewrites create new ops without manual types | Canonicalizer rebuilds `tt.load` and re-infers result from new ptr |
+| **`RegionBranchOpInterface`** | `warp_specialize`, multi-region | CFG-like analysis across regions | AWS pass treats partition regions as successors of `warp_specialize` |
+| **`DestinationStyleOpInterface`** | in-place mem writers | DPS-style bufferization patterns | Some memdesc writers treated as “write into destination operand” |
+| **`ViewLikeInterface`** | memdesc views | Fold/view-chain simplification | `memdesc_subslice(memdesc_subslice(%x))` → single subslice |
+
+#### 5) Control flow / regions
+
+| Trait | When | What you can do | Example |
+| ----- | ---- | --------------- | ------- |
+| **`Terminator`** | Ends a block/region | Region transforms know where control ends | `tt.reduce.return %v` — must be last op in reduce body |
+| **`ReturnLike`** | Returns values from region | Same + return-value plumbing | `ttg.warp_yield %acc` — yields to `warp_specialize` results |
+| **`HasParent<"ReduceOp">`** | Only valid inside parent | Prevents illegal hoisting/outlining | `tt.reduce.return` cannot appear in func body directly |
+| **`IsolatedFromAbove`** | No implicit captures | Partition is self-contained; safe relayout per region | `warp_specialize` partition gets explicit captures only |
+| **`AsyncRegions`** | Async execution model | Async-aware scheduling / speculation rules | `ttg.warp_specialize` — regions start concurrently, join at end |
+| **`RecursivelySpeculatable`** | Safe to speculate through regions | More aggressive motion into/out of regions | Used with async/recursive ops when body is speculatable |
+
+#### 6) Domain-specific native traits (TTG / TTNG)
+
+| Trait | When | What you can do | Example |
+| ----- | ---- | --------------- | ------- |
+| **`MemDescViewTrait`** | memdesc view ops | Shared verify/lowering for views | `ttg.memdesc_subslice %buf[%i]` — new descriptor, same backing smem |
+| **`LocalLoadTrait`** | local_load / local_gather | Shared rules for smem → register | `ttg.local_load %smem` — encoding must match what shared layout allows |
+| **`MemWaitOpTrait`** | async wait ops | Classify as wait/barrier family | `ttg.async_wait` — grouped with other wait ops in pipeline lowering |
+
+#### Worked example: `TT_LoadOp` (see also §1.5)
+
+| Trait on `tt.load` | What it enables | Concrete example |
+| ------------------ | --------------- | ---------------- |
+| `SameLoadStoreOperandsAndResultShape/Encoding` | Result layout follows ptr | load from `tensor<128x64xf16,#blocked>` ptr → same-shaped `#blocked` result |
+| `AttrSizedOperandSegments` | Optional mask/other | `tt.load %p` vs `tt.load %p, %mask, %other` — same op, different segments |
+| `PredicatedOpInterface` | Pipeline can rewrite mask | SWP merges loop predicate into load mask |
+| `MemoryEffectsOpInterface` | No illegal motion | Can't CSE two loads if another thread may store between them (without alias proof) |
+| `InferTypeOpInterface` | Parser/builder convenience | `tt.load %p : !tt.ptr<f32>` → result `f32` or `tensor<...,f32>` auto |
+| `TypesMatchWith` (×3) | ptr/mask/other consistency | `mask: tensor<128xi1>` must match pointee shape `128` |
+
+**How to choose for a new op:** (1) Pure vs memory effects. (2) Tensor layout: `Same*Shape/Encoding` or load/store variants + `TypesMatchWith`. (3) Optional operands → `AttrSizedOperandSegments`. (4) Passes need generic access → declare an interface. (5) Region/terminator → `Terminator` / `HasParent` / region-branch. (6) TTG memdesc-specific → `MemDescViewTrait` / `LocalLoadTrait`.
 
 ---
+
 
 ### 2.6 Op interfaces — polymorphism in detail
 
@@ -576,20 +665,161 @@ Passes query DotOpInterface / TensorDescInterface without concrete switches
 
 ---
 
-## 4. Tests
+## 4. TableGen codegen and `triton-opt` tests
 
-Under `test/Triton/` (`ops.mlir`, `invalid.mlir`, `canonicalize.mlir`, …).
+### 4.1 How TableGen generates C++
 
-```bash
-OPT=build/cmake.linux-x86_64-cpython-3.12/bin/triton-opt
-$OPT test/Triton/ops.mlir >/dev/null
-$OPT --split-input-file --verify-diagnostics test/Triton/invalid.mlir
+You do **not** run `mlir-tblgen` by hand in normal development. CMake wraps it:
 
-# or
-ninja check-triton-lit-tests   # from the CMake build dir
+```text
+*.td  ──mlir-tblgen -gen-…──►  *.h.inc / *.cpp.inc
+         (mlir_tablegen)           included by Dialect.h / Ops.cpp / …
 ```
 
-Lit config: `test/lit.cfg.py`; suite target in `test/CMakeLists.txt`.
+#### CMake wiring (`include/triton/Dialect/Triton/IR/CMakeLists.txt`)
+
+`LLVM_TARGET_DEFINITIONS` names the `.td` file; each `mlir_tablegen` line is one generator:
+
+| `.td` | Generator flags | Output |
+| ----- | --------------- | ------ |
+| `TritonOps.td` | `-gen-op-decls` / `-gen-op-defs` | `Ops.h.inc` / `Ops.cpp.inc` |
+| `TritonOps.td` | `-gen-enum-decls` / `-gen-enum-defs` | `OpsEnums.h.inc` / `OpsEnums.cpp.inc` |
+| `TritonDialect.td` | `-gen-dialect-decls` / `-gen-dialect-defs` | `Dialect.h.inc` / `Dialect.cpp.inc` |
+| `TritonTypes.td` | `-gen-typedef-decls` / `-gen-typedef-defs` | `Types.h.inc` / `Types.cpp.inc` |
+| `TritonOpInterfaces.td` | `-gen-op-interface-decls` / `-gen-op-interface-defs` | `OpInterfaces.h.inc` / `.cpp.inc` |
+| `TritonTypeInterfaces.td` | `-gen-type-interface-decls` / `-gen-type-interface-defs` | `TypeInterfaces.h.inc` / `.cpp.inc` |
+
+`add_public_tablegen_target(TritonTableGen)` is the ninja target that actually runs `mlir-tblgen`. `lib/Dialect/Triton/IR/CMakeLists.txt` lists `DEPENDS TritonTableGen` so `TritonIR` rebuilds after `.td` changes.
+
+Other dialects use the same pattern (`TTG_Op`, `TTNG_Op`, …). Extra generators: `-gen-rewriters` (`TritonCanonicalize.inc`), `-gen-pass-decls` (pass registry).
+
+#### How generated files are consumed
+
+Headers include **decls**; `.cpp` files include **defs** behind macros:
+
+```cpp
+// Dialect.h — class LoadOp, getters, verify hooks
+#define GET_OP_CLASSES
+#include "triton/Dialect/Triton/IR/Ops.h.inc"
+
+// Dialect.cpp — register every tt.* op
+addOperations<
+#define GET_OP_LIST
+#include "triton/Dialect/Triton/IR/Ops.cpp.inc"
+>;
+
+// Ops.cpp — parse/print/builders/verifyTrait glue
+#include "triton/Dialect/Triton/IR/Ops.cpp.inc"
+```
+
+`.inc` files live under the **build tree** (e.g. `BUILD_DIR/include/triton/Dialect/Triton/IR/`), not the source tree. Manual C++ (`Ops.cpp` `verify()`, `fold()`, interface methods) fills what TableGen cannot.
+
+#### Rebuild after a `.td` change
+
+From the CMake build dir (`BUILD_DIR := $(shell PYTHONPATH="./python" python3 -c 'from build_helpers import get_cmake_dir; print(get_cmake_dir())')`):
+
+```bash
+cd BUILD_DIR
+ninja TritonTableGen          # only regenerate .inc
+ninja triton-opt              # relink the tester (depends on TritonIR)
+```
+
+Equivalent of the generator itself (CMake already sets include paths for MLIR + Triton `.td`):
+
+```text
+mlir-tblgen -gen-op-decls TritonOps.td -I <mlir/include> -I include/ …
+```
+
+If `triton-opt` is stale after a dialect edit, parse/print/verify tests will lie.
+
+---
+
+### 4.2 `triton-opt` + lit: how dialect tests run and verify
+
+`triton-opt` is Triton’s `mlir-opt`: parse MLIR, run passes, print IR. It is **not** the Python compiler pipeline.
+
+```text
+.mlir  →  parse (dialects from registry)  →  verify  →  optional passes  →  print
+              │                                  │
+              └─ assemblyFormat + types          └─ traits + hasVerifier + interfaces
+```
+
+#### Tool construction
+
+| Piece | Role |
+| ----- | ---- |
+| `bin/triton-opt.cpp` | `MlirOptMain` + `registerTritonDialects` |
+| `bin/RegisterTritonDialects.h` | Registers `tt` / `ttg` / `ttng` / NVGPU / AMD + **all passes** (`-canonicalize`, `-tritongpu-pipeline`, …) |
+| Linked libs | `TritonIR` (generated + manual op impl) so parse/print/verify match TableGen |
+
+Default (no pass flags): parse → **module verify** → print. That is enough to test “this IR is well-formed.”
+
+#### Lit harness
+
+| File | Role |
+| ---- | ---- |
+| `test/lit.cfg.py` | Suite `TRITON`; suffixes `.mlir` / `.ll`; substitutes `triton-opt` from `BUILD_DIR/bin` |
+| `test/lit.site.cfg.py.in` | CMake fills `triton_obj_root`, LLVM tools, FileCheck path |
+| `test/CMakeLists.txt` | `check-triton-lit-tests` depends on `triton-opt`; `lit` runs the suite |
+
+Each test file starts with `// RUN:` — lit executes that shell line. `%s` is the test file. `FileCheck` matches stdout against `CHECK:` comments in the same file.
+
+#### Three verification styles (dialect IR)
+
+**1. Round-trip / parse-print** (`test/Triton/ops.mlir`)
+
+```mlir
+// RUN: triton-opt %s | FileCheck %s
+// CHECK: tt.load %{{.*}} : !tt.ptr<f32>
+%a = tt.load %ptr : !tt.ptr<f32>
+```
+
+Mechanism: parse using generated `assemblyFormat` → verify traits (`TypesMatchWith`, `TensorSizeTrait`, …) → print → FileCheck. Proves the op **parses, verifies, and pretty-prints**. `| FileCheck` (or `>/dev/null`) fails if verify emits an error.
+
+**2. Negative diagnostics** (`test/Triton/invalid.mlir`)
+
+```mlir
+// RUN: triton-opt --split-input-file %s --verify-diagnostics
+
+// expected-error @+1 {{Cannot bitcast data-type of size}}
+%a = tt.bitcast %arg0 : tensor<128xf32> -> tensor<128xi16>
+```
+
+`--split-input-file` treats `// -----` as separate modules (one bad op per chunk). `--verify-diagnostics` matches `expected-error` / `expected-note` against verifier messages from traits / `hasVerifier`. That is how §2.5 constraints are regression-tested.
+
+**3. Pass transform + FileCheck** (`test/Triton/canonicalize.mlir`)
+
+```mlir
+// RUN: triton-opt %s -split-input-file -canonicalize | FileCheck %s
+// CHECK-NOT: tt.addptr
+%0 = tt.addptr %arg, %c0 : …
+```
+
+Parse → run named pass(es) → print → FileCheck. Tests folders/canonicalizers (`hasFolder` / `hasCanonicalizer`) and later compiler passes (`-tritongpu-pipeline`, `-tritongpu-optimize-partition-warps`, …).
+
+#### Commands
+
+```bash
+# from BUILD_DIR after ninja triton-opt
+ninja triton-opt
+lit -v test/Triton/ops.mlir
+lit -v test/Triton/invalid.mlir
+
+# or one-shot without lit
+./bin/triton-opt ../../test/Triton/ops.mlir >/dev/null
+./bin/triton-opt --split-input-file --verify-diagnostics ../../test/Triton/invalid.mlir
+
+ninja check-triton-lit-tests   # whole suite
+```
+
+No GPU required. Python pytest (`python/test/`) is a different layer (compile kernels); lit is the dialect/pass IR contract.
+
+```text
+.td change → ninja TritonTableGen + triton-opt → lit .mlir
+  generated parse/print/verify ──┐
+  Traits.h / Ops.cpp verify     ─┼─► triton-opt verify / expected-error
+  folders / passes              ─┘     FileCheck on printed IR
+```
 
 ---
 
