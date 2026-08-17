@@ -38,6 +38,20 @@ def _perf_ir_dump(mod_or_str, tag: str, ext: str):
         f.write(text)
 
 
+def _maybe_dump_restart_pm(mod, pm, stage_name: str, tag: str, ext: str):
+    """If dumping, run the current pass manager, snapshot IR, and start a fresh PM.
+
+    Production compiles (no TRITON_PERF_IR_DUMP) keep a single batched PM.
+    """
+    if not os.environ.get("TRITON_PERF_IR_DUMP"):
+        return pm
+    pm.run(mod, stage_name)
+    _perf_ir_dump(mod, tag, ext)
+    npm = ir.pass_manager(mod.context)
+    npm.enable_debug()
+    return npm
+
+
 def min_dot_size(target: GPUTarget):
 
     def check_dot_compatibility(lhs_type, rhs_type) -> Tuple[int, int, int]:  # [m, n, k]
@@ -355,10 +369,14 @@ class CUDABackend(BaseBackend):
             passes.ttgpuir.add_warp_specialize(pm, opt.num_stages)
             passes.ttgpuir.add_pipeline(pm, opt.num_stages, dump_enabled)
             passes.ttgpuir.add_optimize_partition_warps(pm)
+            pm = _maybe_dump_restart_pm(mod, pm, "make_ttgir.after_optimize_partition_warps",
+                                        "10_after_ttgpuir_add_optimize_partition_warps", "ttgir")
             passes.ttgpuir.add_combine_tensor_select_and_if(pm)
             # hoist again and allow hoisting out of if statements
             passes.ttgpuir.add_hoist_tmem_alloc(pm, True)
             nvidia.passes.ttnvgpuir.add_remove_tmem_tokens(pm)
+            pm = _maybe_dump_restart_pm(mod, pm, "make_ttgir.after_remove_tmem_tokens",
+                                        "11_after_ttnvgpuir_add_remove_tmem_tokens", "ttgir")
         else:
             passes.ttir.add_triton_licm(pm)
         passes.common.add_canonicalizer(pm)
@@ -366,6 +384,8 @@ class CUDABackend(BaseBackend):
         if capability // 10 == 8:
             passes.ttgpuir.add_prefetch(pm)
         passes.ttgpuir.add_optimize_dot_operands(pm, capability >= 80)
+        pm = _maybe_dump_restart_pm(mod, pm, "make_ttgir.after_optimize_dot_operands",
+                                    "12_after_ttgpuir_add_optimize_dot_operands", "ttgir")
         passes.ttgpuir.add_coalesce_async_copy(pm)
         nvidia.passes.ttnvgpuir.add_optimize_tmem_layouts(pm)
         nvidia.passes.ttnvgpuir.add_tmem_load_reduce(pm)
@@ -380,6 +400,8 @@ class CUDABackend(BaseBackend):
         passes.ttir.add_loop_aware_cse(pm)
         passes.common.add_symbol_dce(pm)
         nvidia.passes.ttnvgpuir.add_fence_insertion(pm, capability)
+        pm = _maybe_dump_restart_pm(mod, pm, "make_ttgir.after_fence_insertion",
+                                    "13_after_ttnvgpuir_add_fence_insertion", "ttgir")
         nvidia.passes.ttnvgpuir.add_lower_mma(pm)
         nvidia.passes.ttnvgpuir.add_hoist_mbarrier_lifecycle(pm, capability)
         passes.common.add_sccp(pm)
@@ -443,6 +465,8 @@ class CUDABackend(BaseBackend):
         if "consan" in options.instrumentation_mode:
             passes.ttgpuir.add_prepare_consan_captures(pm, "nvidia")
         nvidia.passes.ttgpuir.add_allocate_shared_memory_nv(pm, capability, ptx_version)
+        pm = _maybe_dump_restart_pm(mod, pm, "make_llir.after_allocate_shared_memory_nv",
+                                    "15_after_ttgpuir_add_allocate_shared_memory_nv", "ttgir")
         nvidia.passes.ttnvgpuir.add_allocate_tensor_memory(pm)
         # instrumentation point here so we can override IRs above (e.g., ttir and ttgir)
         if CUDABackend.instrumentation:
@@ -456,6 +480,8 @@ class CUDABackend(BaseBackend):
         passes.ttgpuir.add_canonicalize_llvm_ir(pm)
         passes.common.add_cse(pm)
         nvidia.passes.ttnvgpuir.add_warp_specialize_to_llvm(pm)
+        pm = _maybe_dump_restart_pm(mod, pm, "make_llir.after_warp_specialize_to_llvm",
+                                    "18_after_ttnvgpuir_add_warp_specialize_to_llvm", "mlir")
         nvidia.passes.ttnvgpuir.add_nvgpu_to_llvm(pm)
         passes.common.add_canonicalizer(pm)
         passes.common.add_cse(pm)

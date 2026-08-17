@@ -2,6 +2,8 @@ IR dumps for test_matmul.py::test_op (is_persistent=True, block_m=64)
 kernel: _p_matmul_NNN_fp8e5xfp8e5xfp8e5_64x256x128x1
 source: third_party/nvidia/backend/compiler.py (_perf_ir_dump / TRITON_PERF_IR_DUMP)
 
+See late_passes_summary.md for what each late pass does on this kernel.
+
 01_after_ttir_add_loop_unroll.ttir
   after: passes.ttir.add_loop_unroll(pm)  [end of make_ttir]
 
@@ -15,8 +17,35 @@ source: third_party/nvidia/backend/compiler.py (_perf_ir_dump / TRITON_PERF_IR_D
 05_after_ttgpuir_add_pipeline.ttgir
   after: add_pipeline (+ partition warps / tmem cleanup)
 
+10_after_ttgpuir_add_optimize_partition_warps.ttgir
+  after: passes.ttgpuir.add_optimize_partition_warps(pm)
+
+11_after_ttnvgpuir_add_remove_tmem_tokens.ttgir
+  after: nvidia.passes.ttnvgpuir.add_remove_tmem_tokens(pm)
+
+12_after_ttgpuir_add_optimize_dot_operands.ttgir
+  after: passes.ttgpuir.add_optimize_dot_operands(pm)  [second / post-pipeline]
+
+13_after_ttnvgpuir_add_fence_insertion.ttgir
+  after: nvidia.passes.ttnvgpuir.add_fence_insertion(pm)
+
 02_after_ttnvgpuir_add_lower_mma.ttgir
-  after: nvidia.passes.ttnvgpuir.add_lower_mma(pm)
+  after: nvidia.passes.ttnvgpuir.add_lower_mma(pm)  [end of make_ttgir]
+
+14_after_ttgpuir_add_allocate_warp_groups.ttgir
+  after: passes.ttgpuir.add_allocate_warp_groups(pm)
+
+15_after_ttgpuir_add_allocate_shared_memory_nv.ttgir
+  after: nvidia.passes.ttgpuir.add_allocate_shared_memory_nv(pm)
+
+16_after_ttnvgpuir_add_allocate_tensor_memory.ttgir
+  after: nvidia.passes.ttnvgpuir.add_allocate_tensor_memory(pm)
+
+17_after_ttnvgpuir_add_proxy_fence_insertion.ttgir
+  after: nvidia.passes.ttnvgpuir.add_proxy_fence_insertion(pm)
+
+18_after_ttnvgpuir_add_warp_specialize_to_llvm.mlir
+  after: nvidia.passes.ttnvgpuir.add_warp_specialize_to_llvm(pm)
 
 03_after_llvm_optimize_module_O3.llir
   after: llvm.optimize_module(llvm_mod, llvm.OPTIMIZE_O3)
