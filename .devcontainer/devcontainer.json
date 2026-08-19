@@ -1,0 +1,14 @@
+{
+  "name": "Triton CPU Dev",
+  "image": "quay.io/triton-dev-containers/cpu:latest",
+  "workspaceFolder": "/workspace/triton",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspace/triton,type=bind",
+  "remoteUser": "root",
+  "mounts": [
+    "source=${localEnv:HOME}/.gitconfig,target=/etc/gitconfig,type=bind,readonly"
+  ],
+  "features": {
+    "ghcr.io/devcontainers/features/openssh-client:1": {}
+  },
+  "postCreateCommand": "mkdir -p /root/.ssh && chmod 700 /root/.ssh && echo 'Copy SSH keys from Mac host — see workspace/docker_rebuild_triton_opt.md (docker cp)'"
+}

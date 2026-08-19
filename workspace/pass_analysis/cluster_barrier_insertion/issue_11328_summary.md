@@ -2,8 +2,8 @@
 
 Upstream: [triton-lang/triton#11328](https://github.com/triton-lang/triton/issues/11328)
 
-Folder: `workspace/pass_analysis/cluster_barrier_insertion/`  
-Date: 2026-08-17  
+Folder: `workspace/pass_analysis/cluster_barrier_insertion/`
+Date: 2026-08-17
 Tree: `matmul_perf_analysis` (`ClusterBarrierInsertion.cpp` still uses `getBufferIds` in the effect-collection loop, ~line 372).
 
 ---
