@@ -7,6 +7,7 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/SetVector.h"
+#include "llvm/Support/raw_ostream.h"
 
 #include <limits>
 
@@ -138,6 +139,22 @@ public:
     return bufferIds;
   }
 
+  /// Returns buffer ids recorded in the aliasBuffer map for this value.
+  /// Unlike getAllBufferIdsWithAliases, this does not include valueBuffer
+  /// entries. Views (e.g. memdesc_subslice) should appear here; the owning
+  /// local_alloc should not.
+  SmallVector<BufferId> getAliasBufferIds(Value value) const {
+    SmallVector<BufferId> bufferIds;
+    auto it = aliasBuffer.find(value);
+    if (it == aliasBuffer.end())
+      return bufferIds;
+    for (auto *buffer : it->second) {
+      if (buffer->id != InvalidBufferId)
+        bufferIds.push_back(buffer->id);
+    }
+    return bufferIds;
+  }
+
   /// Returns the scratch buffer id of the given value.
   BufferId getBufferId(Operation *operation) const {
     if (opScratch.count(operation)) {
@@ -164,6 +181,10 @@ public:
 
   /// Returns mapping from operation to list of live LDS buffers
   std::map<Operation *, SmallVector<BufferId>> getLiveBuffers();
+
+  /// Debug dump of scratch/virtual/value/alias buffer maps, and of
+  /// getBufferIds / getAllBufferIdsWithAliases for each tracked value.
+  void printBuffers(llvm::raw_ostream &os = llvm::errs()) const;
 
 private:
   /// A class that represents a shared memory buffer
@@ -215,12 +236,21 @@ private:
     BufferT *buffer = &it->second;
     if constexpr (Kind == BufferT::BufferKind::Explicit) {
       valueBuffer[key].push_back(buffer);
+      llvm::errs() << "--- addBuffer Explicit ---\n";
     } else if constexpr (Kind == BufferT::BufferKind::Virtual) {
       opVirtual[key] = buffer;
+      llvm::errs() << "--- addBuffer Virtual ---\n";
     } else {
       opScratch[key] = buffer;
+      llvm::errs() << "--- addBuffer Scratch ---\n";
     }
-  }
+    llvm::errs() << "key/op: ";
+    key->dump();
+    llvm::errs() << "\nbuffer: {id=" << buffer->id
+                  << ", size=" << buffer->size
+                  << ", offset=" << buffer->offset
+                  << ", align=" << buffer->alignment << "}\n";
+}
 
   /// Create multiple buffers for partitions where all different partitions
   /// are neighbors (must be placed in different physical shared memory slots).

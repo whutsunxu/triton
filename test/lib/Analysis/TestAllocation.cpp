@@ -1,5 +1,6 @@
 #include "mlir/Pass/Pass.h"
 #include "triton/Analysis/Allocation.h"
+#include "llvm/Support/raw_ostream.h"
 
 using namespace mlir;
 
@@ -65,6 +66,28 @@ struct TestAllocationPass
             mlir::emitRemark(op->getLoc())
                 << "offset = " << offset << ", size = " << size;
           }
+          if (!printAliasBuffers)
+            continue;
+          auto aliasBufferIds = allocation->getAliasBufferIds(result);
+          if (aliasBufferIds.empty())
+            continue;
+          std::string aliasMsg;
+          llvm::raw_string_ostream os(aliasMsg);
+          if (bufferIds.empty()) {
+            // Views / aliases of an alloc (e.g. memdesc_subslice).
+            os << "alias-only buffer ids = [";
+            llvm::interleaveComma(aliasBufferIds, os);
+            os << "]";
+            mlir::emitRemark(op->getLoc()) << aliasMsg;
+          } else {
+            // Owning alloc also listed in aliasBuffer: noisy self-alias
+            // (typically addAlias(alloc, alloc) from LocalAllocOp).
+            os << "noisy aliasBuffer entry for owning alloc, "
+                  "alias buffer ids = [";
+            llvm::interleaveComma(aliasBufferIds, os);
+            os << "]";
+            mlir::emitError(op->getLoc()) << aliasMsg;
+          }
         }
       });
       mlir::emitRemark(funcOp.getLoc())
@@ -86,6 +109,11 @@ struct TestAllocationPass
       llvm::cl::desc(
           "Shared memory partition size in bytes (0 = no partitioning)"),
       llvm::cl::init(0)};
+
+  Option<bool> printAliasBuffers{
+      *this, "print-alias-buffers",
+      llvm::cl::desc("Also print aliasBuffer membership for each value"),
+      llvm::cl::init(false)};
 };
 
 } // namespace

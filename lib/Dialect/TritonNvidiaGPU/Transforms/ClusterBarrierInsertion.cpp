@@ -15,6 +15,7 @@
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/raw_ostream.h"
 
 namespace mlir {
 namespace triton {
@@ -325,14 +326,24 @@ void ClusterBarrierAnalysis::update(Operation *op, BlockInfo *blockInfo,
       memEffects.getEffects(effectInstances);
       for (auto effectInstance : effectInstances) {
         if (auto value = effectInstance.getValue()) {
-          for (auto bufferId : allocation.getBufferIds(value)) {
+          llvm::errs() << "\n---op: ";
+          op->dump();
+          llvm::errs() << "\n---value(buffer): ";
+          value.dump();
+          llvm::errs() << "\n";
+          for (auto bufferId : allocation.getBufferIds(value)/*getAllBufferIdsWithAliases(value)*/) {
             if (bufferId != Allocation::InvalidBufferId) {
               auto interval = allocation.getAllocatedInterval(bufferId);
               auto slice = AllocationSlice(value, interval, bufferId);
-              if (isa<MemoryEffects::Write>(effectInstance.getEffect()))
+              if (isa<MemoryEffects::Write>(effectInstance.getEffect())) {
                 curBlockInfo.syncWriteSlices[slice].insert(op);
-              else if (isa<MemoryEffects::Read>(effectInstance.getEffect()))
+                llvm::errs() << "--- effect: Write\n";
+              } else if (isa<MemoryEffects::Read>(effectInstance.getEffect())) {
                 curBlockInfo.syncReadSlices[slice].insert(op);
+                llvm::errs() << "--- effect: Read\n";
+              } else {
+                llvm::errs() << "--- effect: other\n";
+              }
             }
           }
         }
@@ -399,6 +410,9 @@ void runClusterBarrierInsertion(ModuleAllocation &moduleAllocation,
     bool rhsDist = isDistributedMultiCTAOp(rhs, rhsIsRead);
     return !lhsDist && !rhsDist;
   };
+  for (auto funcOp : moduleAllocation.getRoots()) {
+    moduleAllocation.getFuncData(funcOp)->printBuffers();
+  }
 
   ModuleMembarOrFenceAnalysis<ClusterBarrierAnalysis> analysis(moduleAllocation,
                                                                filterFn);

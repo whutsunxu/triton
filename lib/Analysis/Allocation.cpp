@@ -873,4 +873,95 @@ Allocation::getLiveBuffers() {
   return liveBuffers;
 }
 
+void Allocation::printBuffers(llvm::raw_ostream &os) const {
+  auto kindToString = [](BufferT::BufferKind kind) -> StringRef {
+    switch (kind) {
+    case BufferT::BufferKind::Explicit:
+      return "Explicit";
+    case BufferT::BufferKind::Scratch:
+      return "Scratch";
+    case BufferT::BufferKind::Virtual:
+      return "Virtual";
+    }
+    return "Unknown";
+  };
+  auto printBuffer = [&](const BufferT *b) {
+    os << "{id=" << b->id << ", kind=" << kindToString(b->kind)
+       << ", size=" << b->size << ", offset=" << b->offset
+       << ", align=" << b->alignment << "}";
+  };
+  auto printIds = [&](ArrayRef<BufferId> ids) {
+    os << "[";
+    llvm::interleaveComma(ids, os);
+    os << "]";
+  };
+  auto printIdSet = [&](const BufferIdSetT &ids) {
+    SmallVector<BufferId> sorted(ids.begin(), ids.end());
+    llvm::sort(sorted);
+    printIds(sorted);
+  };
+
+  os << "===== Allocation::printBuffers =====\n";
+  os << "sharedMemorySize=" << sharedMemorySize
+     << " bufferIdCounter=" << bufferIdCounter << "\n";
+
+  os << "\n--- opScratch (" << opScratch.size() << ") ---\n";
+  for (auto [op, buffer] : opScratch) {
+    os << "op: ";
+    op->print(os, OpPrintingFlags().skipRegions());
+    os << "\n  scratch: ";
+    printBuffer(buffer);
+    os << "\n  getBufferId(op)=" << getBufferId(op) << "\n";
+  }
+
+  os << "\n--- opVirtual (" << opVirtual.size() << ") ---\n";
+  for (auto [op, buffer] : opVirtual) {
+    os << "op: ";
+    op->print(os, OpPrintingFlags().skipRegions());
+    os << "\n  virtual: ";
+    printBuffer(buffer);
+    os << "\n  getBufferId(op)=" << getBufferId(op) << "\n";
+  }
+
+  os << "\n--- valueBuffer (" << valueBuffer.size() << ") ---\n";
+  for (auto [value, buffers] : valueBuffer) {
+    os << "value: ";
+    value.print(os);
+    os << "\n  buffers:";
+    for (auto *buffer : buffers) {
+      os << "\n    ";
+      printBuffer(buffer);
+    }
+    auto ids = getBufferIds(value);
+    auto aliasIds = getAllBufferIdsWithAliases(value);
+    os << "\n  getBufferIds=";
+    printIds(ids);
+    os << "\n  getAllBufferIdsWithAliases=";
+    printIdSet(aliasIds);
+    os << "\n";
+  }
+
+  os << "\n--- aliasBuffer (" << aliasBuffer.size() << ") ---\n";
+  for (auto [value, buffers] : aliasBuffer) {
+    os << "value: ";
+    value.print(os);
+    os << "\n  aliases:";
+    for (auto *buffer : buffers) {
+      os << "\n    ";
+      printBuffer(buffer);
+    }
+    auto ids = getBufferIds(value);
+    auto aliasIds = getAllBufferIdsWithAliases(value);
+    os << "\n  getBufferIds=";
+    printIds(ids);
+    os << "\n  getAllBufferIdsWithAliases=";
+    printIdSet(aliasIds);
+    if (ids.empty() && !aliasIds.empty())
+      os << "  [alias-only: getBufferIds empty, aliases present]";
+    os << "\n";
+  }
+
+  os << "===== end Allocation::printBuffers =====\n";
+}
+
 } // namespace mlir
