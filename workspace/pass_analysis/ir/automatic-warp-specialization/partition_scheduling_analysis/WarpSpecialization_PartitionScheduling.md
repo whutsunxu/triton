@@ -23,6 +23,35 @@ Companion notes for `_p_matmul_…_64x256x128x1`.
 9 ScheduleLoops
 10 multiBufferTMADescriptors
 ```
+Generally there are 3 stages in warp specialization:
+1, for-loop body parition, which uses the partion id and anchor ops to split the for loop into producer/consumer partitions;
+use hueristics/constrait for ops partitions strategy, it use nodes/ports/edges to mearsure and optimize the cross patitions edges.
+
+2, buffers, empty and full slots: use these shared buffers and share flags as the pipeline to connect the producer and consumers patrtitions: empty status means ready to write, consumer will toggle it after reading; full status means ready to read, prodcucer will toggle it after writiing;
+
+3, loop carrried stages and phase to drive the
+producer-consumer pipeline:
+stage is the loop_indx-wrapped ring index, it decides which slot(buffer, empty, full ) to use fro this loop;
+producer side's for loop:
+check the empty bit with phase:
+if match, load task to write data into buffer,
+if not, wait,
+after finishing writing, flip the full bit,
+flip the phase if loop_index wrapes the ring length
+enter next iteration...
+
+
+consumer side's for loop:
+check the full bit with phase,
+if match, dot task to read the data,
+if not, keep waiting;
+after finishing the reading, flip the empty bit;
+
+flip the phase if loop_index wrapes the ring length
+enter next iteration...
+
+4, because the dot reading task and the following tma write buffer task are from different mem access proxies(different scheudler issue), need to insert the fence to make sure after the reading task is drainned, then start the tms writing task.
+
 
 ---
 
